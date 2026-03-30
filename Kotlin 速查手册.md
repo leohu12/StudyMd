@@ -70,6 +70,61 @@ for (i in 1..10 step 2) { }    // 1,3,5,7,9
 for (item in list) { }
 for ((index, item) in list.withIndex()) { }
 
+list.withIndex() 是 Kotlin 中的一个标准库函数，用于在遍历列表时同时获取元素的索引和值。
+
+基本用法
+它返回一个 IndexedValue 对象的列表，每个对象包含 index 和 value 两个属性。
+
+kotlin
+val fruits = listOf("苹果", "香蕉", "橙子")
+
+// 使用 withIndex() 遍历
+for ((index, value) in fruits.withIndex()) {
+    println("索引 $index: $value")
+}
+// 输出：
+// 索引 0: 苹果
+// 索引 1: 香蕉
+// 索引 2: 橙子
+常见使用场景
+1. 配合 forEach 使用
+kotlin
+fruits.withIndex().forEach { (index, value) ->
+    println("$index -> $value")
+}
+2. 使用解构声明
+kotlin
+val indexedList = fruits.withIndex().toList()
+// indexedList: [(index=0, value=苹果), (index=1, value=香蕉), (index=2, value=橙子)]
+
+indexedList.forEach { (i, v) ->
+    println("位置 $i 是 $v")
+}
+3. 链式调用
+kotlin
+fruits.withIndex()
+    .filter { (index, _) -> index % 2 == 0 }  // 只保留偶数索引
+    .forEach { (_, value) -> println(value) } // 输出：苹果 橙子
+与传统的 for 循环对比
+kotlin
+// 传统方式
+for (i in fruits.indices) {
+    println("索引 $i: ${fruits[i]}")
+}
+
+// 使用 withIndex()（更简洁、更函数式）
+fruits.withIndex().forEach { (i, v) ->
+    println("索引 $i: $v")
+}
+注意事项
+withIndex() 是惰性的，返回一个 Iterable，不会立即创建新列表
+
+适合在需要同时使用索引和元素值时的函数式编程风格
+
+比传统的 for 循环更具可读性，尤其在链式操作中
+
+总的来说，withIndex() 让 Kotlin 中的带索引遍历更加简洁优雅。
+
 // while/do-while
 while (condition) { }
 do { } while (condition)
