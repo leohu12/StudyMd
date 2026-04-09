@@ -1,1293 +1,3429 @@
-# Android Jetpack 核心库速查手册
+# Android Jetpack 核心库速查手册（Java 版）
 
 > 面向有经验的 Android 开发者 | 基于 developer.android.com 官方文档整理
+> 所有代码示例均为 Java，适合 Java 技术栈团队参考
 
 ---
 
 ## 目录
 
-- [一、架构类 (Architecture)](#一架构类-architecture)
+- [一、架构类（Architecture）](#一架构类architecture)
   - [1. ViewModel](#1-viewmodel)
   - [2. LiveData](#2-livedata)
   - [3. Room](#3-room)
   - [4. DataStore](#4-datastore)
   - [5. Navigation](#5-navigation)
   - [6. Paging 3](#6-paging-3)
-  - [7. Hilt](#7-hilt)
+  - [7. Hilt（Dagger Hilt）](#7-hiltdagger-hilt)
 - [二、UI 类](#二ui-类)
-  - [8. Jetpack Compose](#8-jetpack-compose)
-  - [9. Material 3](#9-material-3)
-  - [10. Compose Navigation](#10-compose-navigation)
-  - [11. ViewBinding](#11-viewbinding)
-  - [12. Fragment](#12-fragment)
-  - [13. RecyclerView](#13-recyclerview)
-- [三、基础类 (Foundation)](#三基础类-foundation)
-  - [14. WorkManager](#14-workmanager)
-  - [15. App Startup](#15-app-startup)
-  - [16. SplashScreen](#16-splashscreen)
-- [四、行为类 (Behavior)](#四行为类-behavior)
-  - [17. Biometric](#17-biometric)
-  - [18. CameraX](#18-camerax)
-  - [19. Media3](#19-media3)
-  - [20. Notifications](#20-notifications)
+  - [8. ViewBinding](#8-viewbinding)
+  - [9. Fragment](#9-fragment)
+  - [10. RecyclerView（ListAdapter + DiffUtil）](#10-recyclerviewlistadapter--diffutil)
+- [三、基础类（Foundation）](#三基础类foundation)
+  - [11. WorkManager](#11-workmanager)
+  - [12. App Startup](#12-app-startup)
+  - [13. SplashScreen](#13-splashscreen)
 - [速查总表](#速查总表)
 
 ---
 
-## 一、架构类 (Architecture)
+## 一、架构类（Architecture）
+
+---
 
 ### 1. ViewModel
 
-**一句话定位：** 屏幕级的状态容器，旋转屏幕数据不丢。
+#### 一句话定位
 
-**解决了什么问题：**
+屏幕级的状态容器，旋转屏幕数据不丢。
+
+#### 解决了什么问题
+
 Activity 旋转一下就被销毁重建，之前的数据全没了。以前你得自己 `onSaveInstanceState` 手动存取，又麻烦又容易漏。ViewModel 就是来干这个的——它活得比 Activity 长，旋转时数据自动保留。
 
-**核心原理：**
+#### 适用场景
+
+- 页面需要展示从网络或数据库加载的数据，旋转后不想重新请求
+- 多个 Fragment 共享同一份数据（通过 Activity 级别的 ViewModel）
+- 需要持有一些跟 UI 交互相关的临时状态（如列表选中项、表单输入内容）
+- 需要执行一些跟 UI 生命周期绑定的异步任务（网络请求、数据库操作）
+
+#### 核心原理
 
 打个比方：Activity 是工位，ViewModel 是你工位上锁着的抽屉。工位被拆了重建（旋转），但抽屉还在，新工位打开同一个抽屉，东西一样不少。
 
 技术层面：
+
 - ViewModel 的生命周期绑定到 `ViewModelStoreOwner`（Activity、Fragment、NavBackStackEntry），不是绑定到 Activity 本身
-- 内部通过 `ViewModelStore`（一个 HashMap）存所有 ViewModel 实例，Key 是类名
-- 旋转时 Activity 重建，但 `ViewModelStore` 通过 `NonConfigurationInstances` 保留下来
-- Activity 真正 finish 时才调 `onCleared()` 清理
-- `SavedStateHandle` 解决进程被杀后的数据恢复问题（比 ViewModelStore 更持久）
+- 内部通过 `ViewModelStore`（本质是一个 HashMap）存所有 ViewModel 实例，Key 是类的全限定名
+- 旋转时 Activity 重建，但 `ViewModelStore` 通过 `NonConfigurationInstances`（Activity 的一个成员变量）保留下来，新 Activity 拿到的是同一个 ViewModelStore
+- Activity 真正 finish 时才调 `onCleared()` 清理，此时可以取消网络请求、关闭数据库连接等
+- `SavedStateHandle` 解决进程被杀后的数据恢复问题——ViewModelStore 只能扛住配置变更，扛不住进程死亡；SavedStateHandle 把数据存到 Bundle 里，进程重建后自动恢复
 
-**关键 API：**
+**生命周期对比：**
 
-| API | 用途 |
-|-----|------|
-| `ViewModel` | 基类，放状态和业务逻辑 |
-| `ViewModelProvider` | 创建/获取 ViewModel |
-| `viewModels()` | Kotlin 属性委托，一行拿到 ViewModel |
-| `SavedStateHandle` | 进程重建后恢复数据 |
-| `viewModelScope` | 内置协程作用域，跟 ViewModel 同生共死 |
+```
+Activity:    onCreate → onResume → (旋转) → onDestroy → onCreate → onResume → (finish) → onDestroy
+ViewModel:   onCreate → onResume → (旋转，不受影响) → onResume → (finish) → onCleared
+```
 
-**代码示例：**
+#### 关键 API
 
-```kotlin
-// 定义 ViewModel
-class UserViewModel(savedStateHandle: SavedStateHandle) : ViewModel() {
-    // 用 StateFlow 暴露 UI 状态（推荐，比 LiveData 更现代）
-    private val _uiState = MutableStateFlow(UserUiState())
-    val uiState: StateFlow<UserUiState> = _uiState.asStateFlow()
+| API | 用途 | 说明 |
+|-----|------|------|
+| `ViewModel` | 基类 | 放状态和业务逻辑，不要放 View 引用 |
+| `AndroidViewModel` | 带 Context 的基类 | 需要 Application Context 时用，内部持有 Application |
+| `ViewModelProvider` | 创建/获取 ViewModel | 通过 Factory 模式创建实例 |
+| `ViewModelProvider.Factory` | 工厂接口 | ViewModel 有带参构造函数时必须自定义 Factory |
+| `SavedStateHandle` | 进程重建数据恢复 | 自动保存/恢复 Bundle 数据 |
+| `ViewModelProvider.AndroidViewModelFactory` | 默认工厂 | 支持无参和 AndroidViewModel |
+| `new ViewModelProvider(owner, factory).get(cls)` | 获取实例 | Java 中获取 ViewModel 的标准写法 |
 
-    fun loadUser(userId: String) {
-        viewModelScope.launch {
-            val user = repository.getUser(userId)
-            _uiState.update { it.copy(user = user) }
-        }
+#### Gradle 依赖
+
+```groovy
+dependencies {
+    implementation "androidx.lifecycle:lifecycle-viewmodel:2.8.7"
+    implementation "androidx.lifecycle:lifecycle-viewmodel-savedstate:2.8.7"
+}
+```
+
+#### 代码示例
+
+**基础用法：**
+
+```java
+// 1. 定义 ViewModel
+public class UserViewModel extends ViewModel {
+
+    private final MutableLiveData<User> userLiveData = new MutableLiveData<>();
+    private final UserRepository repository;
+
+    // 无参构造——ViewModelProvider.AndroidViewModelFactory 可以自动创建
+    public UserViewModel() {
+        repository = new UserRepository();
+    }
+
+    public LiveData<User> getUserLiveData() {
+        return userLiveData;
+    }
+
+    public void loadUser(String userId) {
+        // 注意：这里简化了线程切换，实际项目应该用 Executor 或 RxJava
+        repository.getUser(userId, new Callback<User>() {
+            @Override
+            public void onSuccess(User user) {
+                userLiveData.setValue(user);
+            }
+
+            @Override
+            public void onError(Throwable t) {
+                // 错误处理
+            }
+        });
+    }
+
+    @Override
+    protected void onCleared() {
+        // ViewModel 被销毁时清理资源
+        repository.cleanup();
+        super.onCleared();
     }
 }
 
-// Activity 中获取（旋转后拿到的是同一个实例）
-val viewModel: UserViewModel by viewModels()
+// 2. 在 Activity 中获取（旋转后拿到的是同一个实例）
+public class UserActivity extends AppCompatActivity {
 
-// Compose 中获取
-val viewModel: UserViewModel = viewModel()
+    private UserViewModel viewModel;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_user);
+
+        viewModel = new ViewModelProvider(this).get(UserViewModel.class);
+
+        viewModel.getUserLiveData().observe(this, user -> {
+            // 更新 UI
+            nameTextView.setText(user.getName());
+            ageTextView.setText(String.valueOf(user.getAge()));
+        });
+
+        viewModel.loadUser("123");
+    }
+}
 ```
 
-**注意事项：**
-- ViewModel 里不要持有 Activity/View/Context 的引用，会内存泄漏
-- 需要 Context 用 `AndroidViewModel`（提供 Application Context）
-- 推荐用 StateFlow/SharedFlow 替代 LiveData（Compose 生态更友好）
+**带参数的 ViewModel（自定义 Factory）：**
+
+```java
+// 1. 定义带参 ViewModel
+public class DetailViewModel extends ViewModel {
+
+    private final String itemId;
+    private final MutableLiveData<ItemDetail> detailLiveData = new MutableLiveData<>();
+    private final ItemRepository repository;
+
+    public DetailViewModel(String itemId, ItemRepository repository) {
+        this.itemId = itemId;
+        this.repository = repository;
+    }
+
+    // ...
+}
+
+// 2. 自定义 Factory
+public class DetailViewModelFactory implements ViewModelProvider.Factory {
+
+    private final String itemId;
+    private final ItemRepository repository;
+
+    public DetailViewModelFactory(String itemId, ItemRepository repository) {
+        this.itemId = itemId;
+        this.repository = repository;
+    }
+
+    @NonNull
+    @Override
+    public <T extends ViewModel> T create(@NonNull Class<T> modelClass) {
+        if (modelClass.isAssignableFrom(DetailViewModel.class)) {
+            return (T) new DetailViewModel(itemId, repository);
+        }
+        throw new IllegalArgumentException("Unknown ViewModel class");
+    }
+}
+
+// 3. 在 Activity 中使用
+DetailViewModelFactory factory = new DetailViewModelFactory(itemId, repository);
+DetailViewModel viewModel = new ViewModelProvider(this, factory).get(DetailViewModel.class);
+```
+
+**使用 SavedStateHandle（进程重建后恢复数据）：**
+
+```java
+public class SearchViewModel extends ViewModel {
+
+    private final SavedStateHandle savedStateHandle;
+    private static final String KEY_QUERY = "search_query";
+
+    public SearchViewModel(SavedStateHandle savedStateHandle) {
+        this.savedStateHandle = savedStateHandle;
+    }
+
+    // 从 SavedStateHandle 读取（进程重建后也能恢复）
+    public LiveData<String> getSearchQuery() {
+        return savedStateHandle.getLiveData(KEY_QUERY, ""); // 第二个参数是默认值
+    }
+
+    public void setSearchQuery(String query) {
+        savedStateHandle.set(KEY_QUERY, query);
+    }
+}
+
+// 使用 SavedStateHandle 需要用 AbstractSavedStateViewModelFactory
+public class SearchViewModelFactory extends AbstractSavedStateViewModelFactory {
+
+    @NonNull
+    @Override
+    protected <T extends ViewModel> T create(
+            @NonNull String key, @NonNull Class<T> modelClass,
+            @NonNull SavedStateHandle handle) {
+        if (modelClass.isAssignableFrom(SearchViewModel.class)) {
+            return (T) new SearchViewModel(handle);
+        }
+        throw new IllegalArgumentException("Unknown ViewModel class");
+    }
+}
+```
+
+**Fragment 间共享 ViewModel：**
+
+```java
+// 两个 Fragment 共享数据——传入 activity 作为 ViewModelStoreOwner
+public class ListFragment extends Fragment {
+
+    private SharedViewModel sharedViewModel;
+
+    @Override
+    public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
+        super.onViewCreated(view, savedInstanceState);
+        // 关键：用 requireActivity() 而不是 this
+        sharedViewModel = new ViewModelProvider(requireActivity()).get(SharedViewModel.class);
+    }
+}
+
+public class DetailFragment extends Fragment {
+
+    private SharedViewModel sharedViewModel;
+
+    @Override
+    public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
+        super.onViewCreated(view, savedInstanceState);
+        // 拿到的是同一个实例，因为都是 Activity 级别
+        sharedViewModel = new ViewModelProvider(requireActivity()).get(SharedViewModel.class);
+        sharedViewModel.getSelectedItem().observe(getViewLifecycleOwner(), item -> {
+            // 更新详情 UI
+        });
+    }
+}
+```
+
+#### 最佳实践
+
+- ViewModel 里**不要**持有 Activity、View、Context（非 Application）的引用，会导致内存泄漏
+- 需要 Context 时用 `AndroidViewModel`，它提供的是 Application Context，不会泄漏
+- ViewModel 只管数据和业务逻辑，UI 更新通过 LiveData/Flow 通知，不要在 ViewModel 里操作 View
+- 网络请求和数据库操作放在 Repository 层，ViewModel 只调用 Repository
+- `onCleared()` 里取消所有进行中的异步操作
+
+#### 常见问题
+
+| 问题 | 原因 | 解决方案 |
+|------|------|---------|
+| 旋转后 ViewModel 数据没了 | 用了 `this` 而不是 Activity 作为 ViewModelStoreOwner | Fragment 中用 `requireActivity()` |
+| 内存泄漏 | ViewModel 持有了 View 或 Activity 引用 | 只持有 Application Context 或无 Context |
+| 进程被杀后数据丢失 | ViewModelStore 只扛配置变更，扛不住进程死亡 | 用 SavedStateHandle |
+| ViewModel 有带参构造函数报错 | 默认 Factory 只支持无参构造 | 自定义 ViewModelProvider.Factory |
 
 ---
 
 ### 2. LiveData
 
-**一句话定位：** 能感知生命周期的可观察数据，只在页面可见时通知更新。
+#### 一句话定位
 
-**解决了什么问题：**
+能感知生命周期的可观察数据，只在页面可见时通知更新。
+
+#### 解决了什么问题
+
 以前用 RxJava 或 EventBus 观察数据，页面销毁了还在收回调，轻则崩溃重则泄漏。LiveData 天生认识生命周期——页面不可见就不通知你，页面销毁了自动断开，再也不用手动取消订阅。
 
-**核心原理：**
+#### 适用场景
+
+- ViewModel 向 Activity/Fragment 传递数据更新
+- Fragment 间通信（通过共享 ViewModel 中的 LiveData）
+- 需要生命周期感知的数据观察（只在页面可见时更新 UI）
+- 数据库变化监听（Room 的 DAO 方法可以直接返回 LiveData）
+
+#### 核心原理
 
 打个比方：LiveData 像一个智能快递员，他认识你的作息。你在家（STARTED/RESUMED）才给你送包裹，你不在家就不送但会记着，等你回来再把最新的包裹补上。你搬走了（DESTROYED）他就把你从配送名单里删掉。
 
 技术层面：
+
 - 内部维护一个 `SafeObserverMap`，每个观察者关联一个 `LifecycleOwner`
-- 观察者的生命周期处于 `STARTED` 或 `RESUMED` 才算"活跃"
-- 数据变化时只通知活跃观察者，非活跃的会在变活跃时收到最新值
-- 生命周期到 `DESTROYED` 自动移除观察者
-- `setValue()` 主线程用，`postValue()` 后台线程用（会合并多次 post）
+- 观察者的生命周期处于 `STARTED` 或 `RESUMED` 才算"活跃"（Active）
+- 数据变化时只通知活跃观察者，非活跃的会在变活跃时收到最新值（"粘性"特性）
+- 生命周期到 `DESTROYED` 自动移除观察者，不会泄漏
+- `setValue()` 只能在主线程调用，`postValue()` 可以在后台线程调用（但会合并多次 post，只保留最后一次值）
+- 版本号机制：每次 `setValue` 版本号 +1，观察者记录自己上次收到的版本号，只分发版本号更新的数据
 
-**关键 API：**
+**数据分发流程：**
 
-| API | 用途 |
-|-----|------|
-| `MutableLiveData<T>` | 可变的 LiveData，用来发数据 |
-| `LiveData<T>` | 只读的 LiveData，暴露给外部 |
-| `observe(owner, observer)` | 绑定生命周期观察 |
-| `Transformations.map()` | 数据转换（类似 RxJava 的 map） |
-| `Transformations.switchMap()` | 触发式数据转换 |
-| `MediatorLiveData` | 合并多个 LiveData 源 |
+```
+setValue("新数据")
+  → version++
+  → 遍历所有观察者
+    → 判断 Lifecycle 状态是否 >= STARTED
+      → 是：比较版本号，有更新就分发
+      → 否：标记为"需要更新"，等变活跃时再分发
+    → 判断 Lifecycle 状态是否 == DESTROYED
+      → 是：自动移除观察者
+```
 
-**代码示例：**
+#### 关键 API
 
-```kotlin
-class MyViewModel : ViewModel() {
-    // 私有可变，公开不可变——标准写法
-    private val _userName = MutableLiveData<String>()
-    val userName: LiveData<String> = _userName
+| API | 用途 | 说明 |
+|-----|------|------|
+| `MutableLiveData<T>` | 可变的 LiveData | 用来发数据，只暴露给内部 |
+| `LiveData<T>` | 只读的 LiveData | 暴露给外部，防止外部修改 |
+| `observe(owner, observer)` | 绑定生命周期观察 | 最常用的方式，自动管理生命周期 |
+| `observeForever(observer)` | 永远观察 | 必须手动 removeObserver，否则泄漏 |
+| `setValue(value)` | 主线程更新数据 | 只能在主线程调用 |
+| `postValue(value)` | 后台线程更新数据 | 可以在任意线程调用 |
+| `getValue()` | 获取当前值 | 可以在任意线程调用 |
+| `Transformations.map()` | 数据转换 | 类似 RxJava 的 map，返回新的 LiveData |
+| `Transformations.switchMap()` | 触发式数据转换 | 输入变化时切换到新的 LiveData 源 |
+| `MediatorLiveData` | 合并多个 LiveData | 可以监听多个 LiveData 源并合并结果 |
 
-    fun fetchUserName() {
-        viewModelScope.launch {
-            val name = api.getUserName()
-            _userName.value = name  // 主线程直接 setValue
-        }
+#### Gradle 依赖
+
+```groovy
+dependencies {
+    implementation "androidx.lifecycle:lifecycle-livedata:2.8.7"
+    implementation "androidx.lifecycle:lifecycle-livedata-core:2.8.7"
+}
+```
+
+#### 代码示例
+
+**基础用法：**
+
+```java
+public class MyViewModel extends ViewModel {
+
+    // 标准写法：私有 MutableLiveData，公开 LiveData
+    private final MutableLiveData<String> userName = new MutableLiveData<>();
+    private final MutableLiveData<Boolean> isLoading = new MutableLiveData<>(false);
+    private final MutableLiveData<String> errorMessage = new MutableLiveData<>();
+
+    public LiveData<String> getUserName() { return userName; }
+    public LiveData<Boolean> getIsLoading() { return isLoading; }
+    public LiveData<String> getErrorMessage() { return errorMessage; }
+
+    public void fetchUserName() {
+        isLoading.setValue(true);
+        repository.getUserName(new Callback<String>() {
+            @Override
+            public void onSuccess(String name) {
+                isLoading.setValue(false);
+                userName.setValue(name);  // 主线程用 setValue
+            }
+
+            @Override
+            public void onError(Throwable t) {
+                isLoading.setValue(false);
+                errorMessage.setValue(t.getMessage());
+            }
+        });
     }
 }
 
 // Activity 中观察
-viewModel.userName.observe(this) { name ->
-    textView.text = name
+public class MyActivity extends AppCompatActivity {
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        MyViewModel viewModel = new ViewModelProvider(this).get(MyViewModel.class);
+
+        viewModel.getUserName().observe(this, name -> {
+            textView.setText(name);
+        });
+
+        viewModel.getIsLoading().observe(this, loading -> {
+            progressBar.setVisibility(loading ? View.VISIBLE : View.GONE);
+        });
+
+        viewModel.getErrorMessage().observe(this, error -> {
+            if (error != null) {
+                Toast.makeText(this, error, Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
 }
 ```
 
-**注意事项：**
-- 新项目推荐 StateFlow 替代 LiveData（Flow 生态更强大）
-- LiveData 的 `postValue` 有坑：连续调多次只收最后一次
-- `observeForever` 必须手动 `removeObserver`，否则泄漏
+**Transformations.map（数据转换）：**
+
+```java
+public class UserViewModel extends ViewModel {
+
+    private final LiveData<User> userLiveData;
+    // map 转换：User → 格式化的用户名
+    private final LiveData<String> formattedName;
+
+    public UserViewModel(UserRepository repository) {
+        userLiveData = repository.getUserLiveData();
+        formattedName = Transformations.map(userLiveData, user -> {
+            if (user == null) return "未知用户";
+            return user.getLastName() + ", " + user.getFirstName();
+        });
+    }
+
+    public LiveData<String> getFormattedName() { return formattedName; }
+}
+```
+
+**Transformations.switchMap（触发式数据切换）：**
+
+```java
+// 经典场景：根据 userId 切换不同的 LiveData 源
+public class DetailViewModel extends ViewModel {
+
+    private final MutableLiveData<String> userIdLiveData = new MutableLiveData<>();
+    // switchMap：userId 变了，自动切换到对应的 LiveData 源
+    private final LiveData<ItemDetail> detailLiveData;
+
+    public DetailViewModel(ItemRepository repository) {
+        detailLiveData = Transformations.switchMap(userIdLiveData, userId -> {
+            if (userId == null || userId.isEmpty()) {
+                return AbsentLiveData.create(); // 返回空的 LiveData
+            }
+            return repository.loadDetail(userId); // 返回新的 LiveData
+        });
+    }
+
+    public void setUserId(String userId) {
+        userIdLiveData.setValue(userId);
+    }
+
+    public LiveData<ItemDetail> getDetailLiveData() { return detailLiveData; }
+}
+
+// AbsentLiveData：一个永远不会发数据的空 LiveData
+public class AbsentLiveData extends LiveData<Void> {
+    private AbsentLiveData() {}
+    public static <T> LiveData<T> create() {
+        return new AbsentLiveData();
+    }
+}
+```
+
+**MediatorLiveData（合并多个数据源）：**
+
+```java
+// 场景：同时监听本地缓存和网络数据，任一变化都触发更新
+public class CombinedLiveData extends MediatorLiveData<UserProfile> {
+
+    public CombinedLiveData(LiveData<User> userLiveData, LiveData<List<Order>> ordersLiveData) {
+        // 添加源1
+        addSource(userLiveData, user -> {
+            setValue(merge(user, ordersLiveData.getValue()));
+        });
+        // 添加源2
+        addSource(ordersLiveData, orders -> {
+            setValue(merge(userLiveData.getValue(), orders));
+        });
+    }
+
+    private UserProfile merge(User user, List<Order> orders) {
+        return new UserProfile(user, orders);
+    }
+}
+```
+
+**自定义 LiveData（监听数据源）：**
+
+```java
+// 场景：监听位置变化
+public class LocationLiveData extends LiveData<Location> {
+
+    private final LocationManager locationManager;
+    private final LocationListener listener = new LocationListener() {
+        @Override
+        public void onLocationChanged(Location location) {
+            setValue(location); // 有新位置就更新
+        }
+        // ... 其他回调
+    };
+
+    public LocationLiveData(Context context) {
+        locationManager = (LocationManager) context.getSystemService(Context.LOCATION_SERVICE);
+    }
+
+    // 第一个观察者注册时开始监听
+    @Override
+    protected void onActive() {
+        locationManager.requestLocationUpdates(
+            LocationManager.GPS_PROVIDER, 0, 0, listener);
+    }
+
+    // 最后一个观察者移除时停止监听（省电）
+    @Override
+    protected void onInactive() {
+        locationManager.removeUpdates(listener);
+    }
+}
+```
+
+#### 最佳实践
+
+- 永远用"私有 MutableLiveData + 公开 LiveData"的模式，防止外部篡改数据
+- Fragment 中观察 LiveData 必须用 `getViewLifecycleOwner()`，不能用 `this`（Fragment 的生命周期比视图长，用 this 会导致重复观察或崩溃）
+- `postValue` 有坑：连续调多次只保留最后一次值，且不保证立即分发。如果对数据一致性要求高，确保在主线程用 `setValue`
+- 需要合并、转换数据时优先用 `Transformations` 和 `MediatorLiveData`，别在观察者回调里手动处理
+
+#### 常见问题
+
+| 问题 | 原因 | 解决方案 |
+|------|------|---------|
+| Fragment 中收到多次回调 | 用了 `this` 而不是 `getViewLifecycleOwner()` | 改用 `getViewLifecycleOwner()` |
+| postValue 丢了数据 | 连续 post 只保留最后一次 | 主线程用 setValue |
+| observeForever 泄漏 | 没有手动 removeObserver | 在 onDestroy 中 removeObserver |
+| 收到旧数据 | LiveData 的"粘性"特性 | 用 SingleLiveEvent 包装（事件型数据） |
+
+**SingleLiveEvent 实现（一次性事件，不会重复接收）：**
+
+```java
+public class SingleLiveEvent<T> extends MutableLiveData<T> {
+
+    private final AtomicBoolean pending = new AtomicBoolean(false);
+
+    @MainThread
+    public void call(T value) {
+        pending.set(true);
+        setValue(value);
+    }
+
+    @MainThread
+    @Override
+    public void setValue(T value) {
+        super.setValue(value);
+    }
+
+    @Override
+    public void observe(@NonNull LifecycleOwner owner, @NonNull Observer<? super T> observer) {
+        super.observe(owner, new Observer<T>() {
+            @Override
+            public void onChanged(T t) {
+                if (pending.compareAndSet(true, false)) {
+                    observer.onChanged(t);
+                }
+            }
+        });
+    }
+}
+```
 
 ---
 
 ### 3. Room
 
-**一句话定位：** SQLite 的"高级封装"，写 SQL 不用写 JDBC 那套样板代码了。
+#### 一句话定位
 
-**解决了什么问题：**
-直接用 SQLite 要写一堆 `Cursor`、`getColumnIndex`、手动映射对象……又啰嗦又容易写错。Room 在 SQLite 上面包了一层，你只管定义数据类和接口，SQL 查询编译时就帮你检查对不对。
+SQLite 的"高级封装"，编译时帮你检查 SQL 对不对，不用手写 Cursor 那套样板代码了。
 
-**核心原理：**
+#### 解决了什么问题
 
-打个比方：Room 就像你雇了一个数据库管家。你只需要告诉他"我要一张用户表"（@Entity）、"帮我查所有用户"（@Dao 的 @Query），他就会帮你把建表 SQL、查询代码、对象映射全搞定。而且他在你下单之前就会检查你的要求合不合理（编译时验证），不会等你运行了才报错。
+直接用 SQLite 要写一堆 `SQLiteDatabase`、`Cursor`、`getColumnIndex`、手动映射对象……又啰嗦又容易写错（SQL 写错了运行时才崩）。Room 在 SQLite 上面包了一层 ORM，你只管定义实体类和接口，SQL 在编译时就帮你检查。
+
+#### 适用场景
+
+- 本地数据持久化（用户信息、设置、离线缓存）
+- 需要结构化存储的复杂数据（关系型数据、多表关联）
+- 需要监听数据变化并自动更新 UI（配合 LiveData）
+- 大量数据的增删改查（Room 的性能接近原生 SQLite）
+
+#### 核心原理
+
+打个比方：Room 就像你雇了一个数据库管家。你只需要告诉他"我要一张用户表"（@Entity）、"帮我查所有成年用户"（@Dao 的 @Query），他就会帮你把建表 SQL、查询代码、对象映射全搞定。而且他在你下单之前就会检查你的要求合不合理（编译时验证），不会等你运行了才报错。
 
 技术层面：
-- 编译时通过 KSP 处理注解，自动生成 `RoomDatabase_Impl` 等实现类
-- `@Entity` 类 → 自动生成建表 SQL
-- `@Dao` 接口 → 自动生成 SQL 执行和 Cursor→对象映射代码
-- `@Query` 里的 SQL 在编译时验证，表名写错了直接编译报错
+
+- 编译时通过 KSP / AnnotationProcessor 处理注解，自动生成 `RoomDatabase_Impl`、`Dao_Impl` 等实现类
+- `@Entity` 类 → 自动生成 `CREATE TABLE IF NOT EXISTS` SQL，字段名默认用成员变量名，可用 `@ColumnInfo` 自定义
+- `@Dao` 接口 → 自动生成 SQL 执行代码和 `Cursor → 对象` 映射代码
+- `@Query` 里的 SQL 在编译时做语法和表/列名验证，写错了直接编译报错
+- `@ForeignKey` 定义外键约束，`@Index` 定义索引
 - 内部封装了 `SQLiteOpenHelper`，管理数据库版本和连接
-- 支持返回 `Flow<T>`，数据变化时自动通知
+- 支持返回 `LiveData<T>`（数据变化时自动发通知）、`Flow<T>`（Kotlin）、`DataSource.Factory`（Paging）
+- 数据库操作默认不允许在主线程执行，会直接抛异常
 
-**关键 API：**
+**Room 架构图：**
 
-| API | 用途 |
-|-----|------|
-| `@Entity` | 标记数据类，对应一张表 |
-| `@Dao` | 数据访问接口，写查询方法 |
-| `@Database` | 数据库定义，列出所有表和版本号 |
-| `@Query` / `@Insert` / `@Update` / `@Delete` | SQL 操作 |
-| `@Relation` | 定义表关联 |
-| `Room.databaseBuilder()` | 创建数据库实例 |
-| `TypeConverter` | 自定义类型转换（如 Date↔Long） |
+```
+┌─────────────┐     ┌─────────────┐     ┌──────────────────┐
+│   Entity     │────▶│    DAO      │────▶│  RoomDatabase    │
+│ (数据表结构)  │     │ (数据访问接口)│     │  (数据库实例)      │
+└─────────────┘     └─────────────┘     └──────────────────┘
+      │                    │                      │
+  @Entity             @Query/@Insert          Room.databaseBuilder()
+  @PrimaryKey         @Update/@Delete         .build()
+  @ColumnInfo         @Relation
+  @ForeignKey         @TypeConverter
+```
 
-**代码示例：**
+#### 关键 API
 
-```kotlin
-// 1. 定义实体（就是表结构）
-@Entity(tableName = "users")
-data class User(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
-    @ColumnInfo(name = "nickname") val name: String,
-    val age: Int
-)
+| API | 用途 | 说明 |
+|-----|------|------|
+| `@Entity` | 标记数据类 | 对应一张数据库表 |
+| `@PrimaryKey` | 主键 | 支持 `autoGenerate = true` 自增 |
+| `@ColumnInfo` | 列名映射 | 自定义列名、默认值等 |
+| `@Embedded` | 嵌入对象 | 把一个对象的字段展平到表中 |
+| `@Ignore` | 忽略字段 | 该字段不存入数据库 |
+| `@ForeignKey` | 外键约束 | 定义表间关系 |
+| `@Index` | 索引 | 加速查询 |
+| `@Dao` | 数据访问接口 | 定义查询方法 |
+| `@Query` | 查询 | 支持 SQL 查询语句，支持 Flow/LiveData 返回 |
+| `@Insert` | 插入 | 支持 `OnConflictStrategy` 冲突策略 |
+| `@Update` / `@Delete` | 更新/删除 | 支持按实体操作 |
+| `@Relation` | 关系查询 | 在 POJO 中定义一对多、多对多关系 |
+| `@Database` | 数据库定义 | 列出所有 Entity、版本号 |
+| `@TypeConverter` | 类型转换 | 自定义类型 ↔ 数据库类型的转换 |
+| `Room.databaseBuilder()` | 构建数据库 | 创建单例数据库实例 |
+| `Migration` | 数据库迁移 | 版本升级时的数据迁移逻辑 |
 
-// 2. 定义 DAO（数据访问接口）
-@Dao
-interface UserDao {
-    @Query("SELECT * FROM users WHERE age > :minAge")
-    fun getUsersOlderThan(minAge: Int): Flow<List<User>>
+#### Gradle 依赖
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insert(user: User)
-}
-
-// 3. 定义数据库
-@Database(entities = [User::class], version = 1)
-abstract class AppDatabase : RoomDatabase() {
-    abstract fun userDao(): UserDao
-}
-
-// 4. 使用
-val db = Room.databaseBuilder(context, AppDatabase::class.java, "app.db").build()
-db.userDao().getUsersOlderThan(18).collect { users ->
-    // 数据库变化时自动触发
+```groovy
+dependencies {
+    implementation "androidx.room:room-runtime:2.6.1"
+    annotationProcessor "androidx.room:room-compiler:2.6.1"
+    // 可选：LiveData 支持
+    implementation "androidx.room:room-livedata:2.6.1"
+    // 可选：RxJava 支持
+    implementation "androidx.room:room-rxjava3:2.6.1"
+    // 可选：Paging 支持
+    implementation "androidx.room:room-paging:2.6.1"
 }
 ```
 
-**注意事项：**
-- 数据库操作默认在主线程会崩，记得用 `suspend` 或 `Flow`
-- 升级数据库用 `Migration`，别用 `fallbackToDestructiveMigration()`（会丢数据）
-- 大量数据用 `Paging` + Room 配合，别一次性全查出来
+#### 代码示例
+
+**基础用法（完整流程）：**
+
+```java
+// 1. 定义实体（对应一张表）
+@Entity(tableName = "users")
+public class User {
+    @PrimaryKey(autoGenerate = true)
+    private int uid;
+
+    @ColumnInfo(name = "first_name")
+    private String firstName;
+
+    @ColumnInfo(name = "last_name")
+    private String lastName;
+
+    private int age;
+
+    @Ignore  // 这个字段不存入数据库
+    private transient String tempFlag;
+
+    // Room 要求必须有构造函数（可以是全部参数或部分参数）
+    // 全参构造（Room 用这个来从 Cursor 创建对象）
+    public User(int uid, String firstName, String lastName, int age) {
+        this.uid = uid;
+        this.firstName = firstName;
+        this.lastName = lastName;
+        this.age = age;
+    }
+
+    // 无参构造（可选，方便手动创建）
+    public User() {}
+
+    // Getter 和 Setter（Room 通过 getter/setter 访问字段）
+    public int getUid() { return uid; }
+    public void setUid(int uid) { this.uid = uid; }
+    public String getFirstName() { return firstName; }
+    public void setFirstName(String firstName) { this.firstName = firstName; }
+    public String getLastName() { return lastName; }
+    public void setLastName(String lastName) { this.lastName = lastName; }
+    public int getAge() { return age; }
+    public void setAge(int age) { this.age = age; }
+}
+
+// 2. 定义 DAO（数据访问对象）
+@Dao
+public interface UserDao {
+
+    // 查询所有用户，返回 LiveData（数据变化时自动通知）
+    @Query("SELECT * FROM users ORDER BY last_name ASC")
+    LiveData<List<User>> getAllUsers();
+
+    // 按条件查询
+    @Query("SELECT * FROM users WHERE age > :minAge")
+    List<User> getUsersOlderThan(int minAge);
+
+    // 按名字模糊搜索
+    @Query("SELECT * FROM users WHERE first_name LIKE '%' || :keyword || '%'")
+    LiveData<List<User>> searchUsers(String keyword);
+
+    // 插入单条，冲突时替换
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    long insert(User user);
+
+    // 批量插入
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    List<Long> insertAll(List<User> users);
+
+    // 更新
+    @Update
+    int update(User user);
+
+    // 删除
+    @Delete
+    int delete(User user);
+
+    // 复杂查询：联表
+    @Query("SELECT users.*, orders.order_count FROM users "
+         + "LEFT JOIN (SELECT user_id, COUNT(*) as order_count FROM orders GROUP BY user_id) orders "
+         + "ON users.uid = orders.user_id "
+         + "WHERE users.age > :minAge")
+    LiveData<List<UserWithOrderCount>> getUsersWithOrderCount(int minAge);
+}
+
+// 3. 定义数据库
+@Database(entities = {User.class}, version = 1, exportSchema = false)
+public abstract class AppDatabase extends RoomDatabase {
+    public abstract UserDao userDao();
+}
+
+// 4. 创建数据库单例
+public class DatabaseHelper {
+
+    private static volatile AppDatabase INSTANCE;
+
+    public static AppDatabase getInstance(Context context) {
+        if (INSTANCE == null) {
+            synchronized (DatabaseHelper.class) {
+                if (INSTANCE == null) {
+                    INSTANCE = Room.databaseBuilder(
+                        context.getApplicationContext(),
+                        AppDatabase.class,
+                        "app_database"
+                    )
+                    // .addMigrations(MIGRATION_1_2)  // 数据库升级迁移
+                    // .fallbackToDestructiveMigration()  // 谨慎使用！会清空数据
+                    .build();
+                }
+            }
+        }
+        return INSTANCE;
+    }
+}
+
+// 5. 在 ViewModel 中使用
+public class UserListViewModel extends ViewModel {
+
+    private final LiveData<List<User>> userList;
+    private final UserDao userDao;
+    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+
+    public UserListViewModel(Application application) {
+        AppDatabase db = DatabaseHelper.getInstance(application);
+        userDao = db.userDao();
+        userList = userDao.getAllUsers(); // 返回 LiveData，自动监听变化
+    }
+
+    public LiveData<List<User>> getUserList() { return userList; }
+
+    public void addUser(User user) {
+        executor.execute(() -> userDao.insert(user)); // 数据库操作不能在主线程
+    }
+}
+```
+
+**数据库迁移（版本升级）：**
+
+```java
+// Migration：从版本 1 升级到版本 2，新增 email 字段
+static final Migration MIGRATION_1_2 = new Migration(1, 2) {
+    @Override
+    public void migrate(@NonNull SupportSQLiteDatabase database) {
+        database.execSQL("ALTER TABLE users ADD COLUMN email TEXT DEFAULT ''");
+    }
+};
+
+// 版本 2 升级到版本 3，新增索引
+static final Migration MIGRATION_2_3 = new Migration(2, 3) {
+    @Override
+    public void migrate(@NonNull SupportSQLiteDatabase database) {
+        database.execSQL("CREATE INDEX index_users_email ON users(email)");
+    }
+};
+
+// 构建数据库时添加迁移
+Room.databaseBuilder(context, AppDatabase.class, "app_database")
+    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+    .build();
+```
+
+**TypeConverter（自定义类型转换）：**
+
+```java
+// 场景：Date 类型不能直接存入数据库，需要转换
+public class Converters {
+
+    @TypeConverter
+    public static Date fromTimestamp(Long value) {
+        return value == null ? null : new Date(value);
+    }
+
+    @TypeConverter
+    public static Long dateToTimestamp(Date date) {
+        return date == null ? null : date.getTime();
+    }
+
+    // List<String> ↔ JSON 字符串
+    @TypeConverter
+    public static String fromStringList(List<String> list) {
+        if (list == null) return null;
+        return new Gson().toJson(list);
+    }
+
+    @TypeConverter
+    public static List<String> toStringList(String json) {
+        if (json == null) return null;
+        return new Gson().fromJson(json, new TypeToken<List<String>>() {}.getType());
+    }
+}
+
+// 在 @Database 中注册 TypeConverter
+@Database(entities = {User.class}, version = 1)
+@TypeConverters({Converters.class})
+public abstract class AppDatabase extends RoomDatabase {
+    public abstract UserDao userDao();
+}
+```
+
+**关系查询（@Relation + @Embedded）：**
+
+```java
+// 一对多：一个用户有多个订单
+public class UserWithOrders {
+    @Embedded
+    public User user;
+
+    @Relation(
+        parentColumn = "uid",
+        entityColumn = "user_id"
+    )
+    public List<Order> orders;
+}
+
+// 在 DAO 中查询
+@Dao
+public interface UserDao {
+    @Transaction  // 关系查询必须加 @Transaction，保证原子性
+    @Query("SELECT * FROM users WHERE uid = :userId")
+    LiveData<UserWithOrders> getUserWithOrders(int userId);
+}
+```
+
+#### 最佳实践
+
+- 数据库操作**绝对不要在主线程**执行，Room 默认会抛 `IllegalStateException`。用 `ExecutorService`、`RxJava` 或返回 `LiveData`（Room 自动在后台线程执行）
+- 升级数据库**必须用 Migration**，千万别用 `fallbackToDestructiveMigration()`（会清空所有数据）。在开发阶段可以暂时用，但上线前一定要删掉
+- 数据库实例用**单例模式**，整个 App 只创建一个 RoomDatabase 实例
+- 大量数据用 `Paging` + Room 配合（DAO 返回 `DataSource.Factory`），别一次性全查出来
+- `@Database` 的 `exportSchema` 建议设为 `true`，把 schema JSON 文件保存到版本控制中，方便追踪数据库结构变化
+
+#### 常见问题
+
+| 问题 | 原因 | 解决方案 |
+|------|------|---------|
+| 主线程崩溃 | 数据库操作在主线程执行 | 用 Executor 或返回 LiveData |
+| 升级后崩溃 | 没提供 Migration | 添加对应的 Migration |
+| 实体类编译报错 | 缺少 Getter/Setter 或构造函数 | Room 需要空构造或全参构造 + getter/setter |
+| @Relation 查询结果为空 | 没加 @Transaction | 关系查询必须加 @Transaction |
+| 查询结果字段为 null | 列名和字段名不匹配 | 用 @ColumnInfo 映射列名 |
 
 ---
 
 ### 4. DataStore
 
-**一句话定位：** SharedPreferences 的替代品，异步、不会卡主线程。
+#### 一句话定位
 
-**解决了什么问题：**
-SharedPreferences（SP）有几个老毛病：同步 IO 会卡主线程导致 ANR、没有类型安全、`apply()` 的原子性有问题。DataStore 用协程 + Flow 重新做了一遍，彻底解决了这些问题。
+SharedPreferences 的替代品，全程异步不会卡主线程，支持事务性写入。
 
-**核心原理：**
+#### 解决了什么问题
 
-打个比方：SP 像一个小本子，每次读写都得等上一个人写完（apply 看似异步其实有坑）。DataStore 像一个自动存取柜——你把东西放进去（`updateData`），它保证原子性操作（要么全成功要么全失败），而且全程异步，绝不让你干等。
+SharedPreferences（SP）有几个老毛病：
+- `apply()` 看似异步，实际上是在主线程做 XML 序列化，数据量大时会 ANR
+- `commit()` 直接同步写磁盘，更危险
+- 没有类型安全，什么类型都能塞进去，取出来类型不对就崩
+- `apply()` 的原子性有问题——进程意外死亡时可能丢失最后一次写入
+
+DataStore 用协程（Kotlin）或 Executor（Java）重新做了一遍，彻底解决了这些问题。
+
+#### 适用场景
+
+- 存储用户设置（主题模式、语言、通知开关等简单键值对）
+- 存储用户 Token、登录状态等少量配置信息
+- 替代 SharedPreferences 的所有场景
+- 需要类型安全的配置存储
+
+#### 核心原理
+
+打个比方：SP 像一个小本子，每次读写都得等上一个人写完（apply 看似异步其实有坑）。DataStore 像一个自动存取柜——你把东西放进去（`updateDataAsync`），它保证原子性操作（要么全成功要么全失败），而且全程异步，绝不让你干等。
 
 技术层面：
-- **Preferences DataStore**：键值对存储，类似 SP 的用法，但用 Flow 暴露数据
-- **Proto DataStore**：存自定义类型对象，需要定义 schema（Protocol Buffers 或自定义 Serializer）
-- `updateData()` 内部是原子性的读-改-写事务，并发安全
-- 数据存在文件里（XML 格式），通过协程异步读写
-- 同一进程中对同一个文件只应创建一个 DataStore 实例（用委托保证单例）
 
-**关键 API：**
+- **Preferences DataStore**：键值对存储，类似 SP 的用法，但用 Flow/LiveData 暴露数据变化
+- **Proto DataStore**：存自定义类型对象，需要定义 Protocol Buffers schema（目前 Java 支持有限）
+- Java 中使用 DataStore 主要通过 `PreferencesDataStoreFactory` 和 `RxDataStore`（RxJava3 版本）
+- `updateDataAsync()` 内部是原子性的读-改-写事务，并发安全
+- 数据存在文件里（XML 格式），通过异步 IO 读写
+- 同一进程中对同一个文件只应创建一个 DataStore 实例
 
-| API | 用途 |
-|-----|------|
-| `preferencesDataStore(name)` | Kotlin 委托，创建 Preferences DataStore |
-| `dataStore` | Kotlin 委托，创建 Proto DataStore |
-| `dataStore.data` | Flow，监听数据变化 |
-| `dataStore.edit { }` | 修改数据（原子操作） |
-| `dataStore.updateData { }` | Proto DataStore 修改数据 |
-| `intPreferencesKey()` | 定义键 |
+#### Gradle 依赖
 
-**代码示例：**
+```groovy
+dependencies {
+    // Preferences DataStore（Java 推荐用 RxJava 版本）
+    implementation "androidx.datastore:datastore-preferences:1.1.1"
+    implementation "androidx.datastore:datastore-preferences-rxjava3:1.1.1"
+    // 如果需要 RxJava
+    implementation "io.reactivex.rxjava3:rxjava:3.1.9"
+    implementation "io.reactivex.rxjava3:rxandroid:3.0.2"
+}
+```
 
-```kotlin
-// 创建（放在顶层或依赖注入）
-val Context.settingsDataStore by preferencesDataStore(name = "settings")
+#### 代码示例
 
-// 定义键
-object SettingsKeys {
-    val DARK_MODE = booleanPreferencesKey("dark_mode")
-    val USER_TOKEN = stringPreferencesKey("user_token")
+**Java + RxJava3 使用 Preferences DataStore：**
+
+```java
+// 1. 创建 DataStore 单例
+public class SettingsDataStore {
+
+    private static volatile SettingsDataStore INSTANCE;
+    private final RxPreferenceDataStore<Preferences> dataStore;
+
+    // 定义键
+    public static final Preferences.Key<Boolean> DARK_MODE_KEY =
+            Preferences.Key.booleanPreferencesKey("dark_mode");
+    public static final Preferences.Key<String> USER_TOKEN_KEY =
+            Preferences.Key.stringPreferencesKey("user_token");
+    public static final Preferences.Key<Integer> PAGE_SIZE_KEY =
+            Preferences.Key.intPreferencesKey("page_size");
+
+    private SettingsDataStore(Context context) {
+        dataStore = new RxPreferenceDataStoreBuilder(
+            context.getApplicationContext(),
+            /* name = */ "settings"
+        ).build();
+    }
+
+    public static SettingsDataStore getInstance(Context context) {
+        if (INSTANCE == null) {
+            synchronized (SettingsDataStore.class) {
+                if (INSTANCE == null) {
+                    INSTANCE = new SettingsDataStore(context);
+                }
+            }
+        }
+        return INSTANCE;
+    }
+
+    // 读取（返回 Flowable，数据变化时自动通知）
+    public Flowable<Boolean> isDarkMode() {
+        return dataStore.data()
+            .map(prefs -> prefs.get(DARK_MODE_KEY) != null
+                ? prefs.get(DARK_MODE_KEY) : false)
+            .subscribeOn(Schedulers.io());
+    }
+
+    public Flowable<String> getUserToken() {
+        return dataStore.data()
+            .map(prefs -> prefs.get(USER_TOKEN_KEY) != null
+                ? prefs.get(USER_TOKEN_KEY) : "")
+            .subscribeOn(Schedulers.io());
+    }
+
+    // 写入（原子性操作）
+    public Completable setDarkMode(boolean enabled) {
+        return dataStore.updateDataAsync(prefsIn -> {
+            MutablePreferences mutablePrefs = prefsIn.toMutablePreferences();
+            mutablePrefs.set(DARK_MODE_KEY, enabled);
+            return Single.just(mutablePrefs);
+        }).subscribeOn(Schedulers.io());
+    }
+
+    public Completable setUserToken(String token) {
+        return dataStore.updateDataAsync(prefsIn -> {
+            MutablePreferences mutablePrefs = prefsIn.toMutablePreferences();
+            mutablePrefs.set(USER_TOKEN_KEY, token);
+            return Single.just(mutablePrefs);
+        }).subscribeOn(Schedulers.io());
+    }
+
+    // 清空所有数据
+    public Completable clearAll() {
+        return dataStore.updateDataAsync(prefsIn ->
+            Single.just(prefsIn.toMutablePreferences().clear())
+        ).subscribeOn(Schedulers.io());
+    }
 }
 
-// 读取
-val darkModeFlow: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
-    prefs[SettingsKeys.DARK_MODE] ?: false
+// 2. 在 Activity/ViewModel 中使用
+public class SettingsViewModel extends ViewModel {
+
+    private final SettingsDataStore dataStore;
+
+    public SettingsViewModel(Application application) {
+        dataStore = SettingsDataStore.getInstance(application);
+    }
+
+    public Flowable<Boolean> isDarkMode() {
+        return dataStore.isDarkMode();
+    }
+
+    public void setDarkMode(boolean enabled) {
+        dataStore.setDarkMode(enabled)
+            .subscribe(
+                () -> { /* 成功 */ },
+                error -> { /* 错误处理 */ }
+            );
+    }
 }
 
-// 写入
-suspend fun setDarkMode(enabled: Boolean) {
-    context.settingsDataStore.edit { prefs ->
-        prefs[SettingsKeys.DARK_MODE] = enabled
+// Activity 中观察
+public class SettingsActivity extends AppCompatActivity {
+
+    private SettingsViewModel viewModel;
+    private final CompositeDisposable disposables = new CompositeDisposable();
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        viewModel = new ViewModelProvider(this).get(SettingsViewModel.class);
+
+        disposables.add(viewModel.isDarkMode()
+            .observeOn(AndroidSchedulers.mainThread())
+            .subscribe(darkMode -> {
+                darkModeSwitch.setChecked(darkMode);
+            }));
+
+        darkModeSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            viewModel.setDarkMode(isChecked);
+        });
+    }
+
+    @Override
+    protected void onDestroy() {
+        disposables.clear(); // 防止泄漏
+        super.onDestroy();
     }
 }
 ```
 
-**注意事项：**
-- 别在同一个进程创建多个 DataStore 实例访问同一文件，会出并发问题
-- 简单配置用 Preferences DataStore，复杂对象用 Proto DataStore
-- SP → DataStore 迁移有专门的 `SharedPreferencesMigration`，别手动搬数据
+**从 SharedPreferences 迁移到 DataStore：**
+
+```java
+// DataStore 支持自动迁移 SP 数据
+RxPreferenceDataStoreBuilder(context, "settings")
+    .setMigration(new SharedPreferencesMigration<>(context, "old_shared_prefs_name"))
+    .build();
+```
+
+#### 最佳实践
+
+- DataStore 实例用**单例模式**，同一进程中对同一个文件只创建一个实例，否则会出并发问题
+- Java 项目推荐用 `datastore-preferences-rxjava3` 版本，API 更友好
+- 简单配置用 Preferences DataStore，复杂对象可以考虑 Proto DataStore 或 Room
+- SP → DataStore 迁移有专门的 `SharedPreferencesMigration`，不要手动搬数据
+- 写入操作返回 `Completable`，记得在 `onDestroy` 中清理 RxJava 订阅
+
+#### 常见问题
+
+| 问题 | 原因 | 解决方案 |
+|------|------|---------|
+| 并发修改异常 | 创建了多个 DataStore 实例 | 用单例模式 |
+| 数据丢失 | 进程在写入时被杀 | DataStore 保证原子性，比 SP 安全 |
+| RxJava 泄漏 | 没有在 onDestroy 取消订阅 | 用 CompositeDisposable 管理 |
 
 ---
 
 ### 5. Navigation
 
-**一句话定位：** 管理页面跳转的"总调度"，用图结构替代碎片化的事务管理。
+#### 一句话定位
 
-**解决了什么问题：**
-以前用 `FragmentManager.beginTransaction()` 管理页面跳转，代码又散又乱，传参靠 Bundle 容易写错 key，深链接更是噩梦。Navigation 把所有页面和跳转关系画成一张"地图"，跳转、传参、返回栈、深链接全部统一管理。
+管理页面跳转的"总调度"，用图结构替代碎片化的事务管理。
 
-**核心原理：**
+#### 解决了什么问题
+
+以前用 `FragmentManager.beginTransaction()` 管理页面跳转，代码又散又乱：
+- 传参靠 Bundle，key 写错了运行时才崩
+- 深链接（从浏览器/通知跳转到特定页面）实现复杂
+- 返回栈管理混乱，动画不统一
+- 过渡动画需要在每个事务里手动设置
+
+Navigation 把所有页面和跳转关系画成一张"地图"（NavGraph），跳转、传参、返回栈、深链接、动画全部统一管理。
+
+#### 适用场景
+
+- App 内多页面导航（Tab 切换、列表→详情、登录→主页等）
+- 需要深链接支持（从外部跳转到 App 内特定页面）
+- 复杂的导航流程（条件跳转、嵌套导航图）
+- 需要统一的动画和转场效果
+- 底部导航栏 + Fragment 切换
+
+#### 核心原理
 
 打个比方：Navigation 就像商场导航图。你站在商场入口（NavHost），想去三楼餐厅（Destination），导航图告诉你怎么走（NavController.navigate()），还能自动规划路线（深链接直达）。你走过的路它都记着（返回栈），随时可以原路返回。
 
 技术层面：
-- **NavGraph**：图结构，定义所有目的地（Destination）和它们之间的连线（Action）
-- **NavController**：中央调度器，执行 navigate、popBackStack 等操作
-- **NavHost**：UI 容器，根据当前目的地显示对应页面
-- 支持 Fragment 和 Compose 两种宿主模式
-- Safe Args 插件提供类型安全的参数传递（Fragment 模式）
-- Compose 模式推荐用 `@Serializable` 数据类做路由，类型安全
 
-**关键 API：**
+- **NavGraph**：图结构，定义所有目的地（Destination）和它们之间的连线（Action）。可以在 XML 中定义，也可以用 Navigation Component 的 DSL 动态创建
+- **NavController**：中央调度器，执行 navigate、popBackStack、navigateUp 等操作。内部维护一个返回栈（BackStack）
+- **NavHostFragment**：UI 容器 Fragment，根据当前目的地显示对应的 Fragment
+- **Safe Args**：Gradle 插件，为每个目的地生成类型安全的参数类，传参不会写错类型和 key
+- **Deep Link**：支持从 URL、通知、Intent 直接跳转到指定目的地
+- Navigation 跟 Fragment 生命周期绑定，自动处理返回键
 
-| API | 用途 |
-|-----|------|
-| `NavHost(navController, startDestination)` | 导航容器 |
-| `composable<T>()` | 注册 Compose 目的地 |
-| `navController.navigate(route)` | 跳转 |
-| `navController.popBackStack()` | 返回上一页 |
-| `navController.previousBackStackEntry` | 获取上一页 |
-| `navDeepLink()` | 定义深链接 |
-| `NavigationSuiteScaffold` | 自适应导航栏（手机底部/平板侧边） |
+**导航流程：**
 
-**代码示例：**
+```
+用户点击 → NavController.navigate(actionId, bundle)
+  → 查找 NavGraph 中的 Action
+  → 确定目标 Destination
+  → 执行 FragmentTransaction（replace）
+  → 将当前 Destination 压入返回栈
+  → 显示目标 Fragment
+```
 
-```kotlin
-// 定义路由（类型安全）
-@Serializable data class Home(val tab: Int = 0)
-@Serializable data class Detail(val itemId: String)
+#### 关键 API
 
-// 构建导航图
-@Composable fun MyAppNavHost(navController: NavHostController) {
-    NavHost(navController = navController, startDestination = Home()) {
-        composable<Home> { backStackEntry ->
-            val home = backStackEntry.toRoute<Home>()
-            HomeScreen(onItemClick = { id ->
-                navController.navigate(Detail(itemId = id))
-            })
-        }
-        composable<Detail> { backStackEntry ->
-            val detail = backStackEntry.toRoute<Detail>()
-            DetailScreen(itemId = detail.itemId)
-        }
+| API | 用途 | 说明 |
+|-----|------|------|
+| `NavHostFragment` | 导航容器 | 放在布局中，自动显示当前目的地 |
+| `NavController` | 导航控制器 | 执行跳转、返回等操作 |
+| `Navigation.findNavController(view)` | 获取 NavController | 从 View 获取关联的 NavController |
+| `navController.navigate(actionId)` | 按Action跳转 | 最常用的跳转方式 |
+| `navController.navigate(actionId, bundle)` | 带参数跳转 | 通过 Bundle 传参 |
+| `navController.navigateUp()` | 向上一级 | 类似返回键 |
+| `navController.popBackStack()` | 弹出返回栈 | 返回上一页 |
+| `navController.popBackStack(id, inclusive)` | 弹到指定页面 | inclusive=true 连目标也弹出 |
+| `navController.getBackStackEntry()` | 获取返回栈条目 | 可以获取关联的 ViewModel |
+| `NavDirections` | Safe Args 生成的类 | 类型安全的跳转和参数 |
+| `navController.navigate(deepLink)` | 深链接跳转 | 从 URI/Intent 跳转 |
+
+#### Gradle 依赖
+
+```groovy
+dependencies {
+    implementation "androidx.navigation:navigation-fragment:2.8.5"
+    implementation "androidx.navigation:navigation-ui:2.8.5"
+    // Safe Args 插件（在 build.gradle 顶层）
+}
+
+// build.gradle（项目级）
+plugins {
+    id 'androidx.navigation.safeargs' version '2.8.5' apply false
+}
+
+// build.gradle（模块级）
+plugins {
+    id 'androidx.navigation.safeargs'
+}
+```
+
+#### 代码示例
+
+**1. 定义导航图（res/navigation/main_nav.xml）：**
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/main_nav"
+    app:startDestination="@id/homeFragment">
+
+    <!-- 首页 -->
+    <fragment
+        android:id="@+id/homeFragment"
+        android:name="com.example.app.HomeFragment"
+        tools:layout="@layout/fragment_home">
+        <action
+            android:id="@+id/action_home_to_detail"
+            app:destination="@id/detailFragment"
+            app:enterAnim="@anim/slide_in_right"
+            app:exitAnim="@anim/slide_out_left"
+            app:popEnterAnim="@anim/slide_in_left"
+            app:popExitAnim="@anim/slide_out_right" />
+    </fragment>
+
+    <!-- 详情页（带参数） -->
+    <fragment
+        android:id="@+id/detailFragment"
+        android:name="com.example.app.DetailFragment"
+        tools:layout="@layout/fragment_detail">
+        <argument
+            android:name="itemId"
+            app:argType="string" />
+        <argument
+            android:name="from"
+            android:defaultValue="home"
+            app:argType="string" />
+        <deepLink
+            android:id="@+id/deepLink"
+            app:uri="https://www.example.com/detail/{itemId}" />
+    </fragment>
+
+    <!-- 设置页 -->
+    <fragment
+        android:id="@+id/settingsFragment"
+        android:name="com.example.app.SettingsFragment"
+        tools:layout="@layout/fragment_settings" />
+
+</navigation>
+```
+
+**2. 在 Activity 布局中放置 NavHostFragment：**
+
+```xml
+<!-- activity_main.xml -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <fragment
+        android:id="@+id/nav_host_fragment"
+        android:name="androidx.navigation.fragment.NavHostFragment"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        app:defaultNavHost="true"
+        app:navGraph="@navigation/main_nav" />
+
+    <!-- 底部导航栏 -->
+    <com.google.android.material.bottomnavigation.BottomNavigationView
+        android:id="@+id/bottom_nav"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        app:menu="@menu/bottom_nav_menu" />
+
+</LinearLayout>
+```
+
+**3. 在 Activity 中配置底部导航：**
+
+```java
+public class MainActivity extends AppCompatActivity {
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+        BottomNavigationView bottomNav = findViewById(R.id.bottom_nav);
+        NavController navController = Navigation.findNavController(this, R.id.nav_host_fragment);
+
+        // 底部导航栏自动绑定 Navigation
+        NavigationUI.setupWithNavController(bottomNav, navController);
+
+        // 处理 ActionBar 的返回箭头
+        AppBarConfiguration appBarConfig = new AppBarConfiguration.Builder(
+            R.id.homeFragment, R.id.settingsFragment  // 这些是顶层页面，不显示返回箭头
+        ).build();
+        NavigationUI.setupActionBarWithNavController(this, navController, appBarConfig);
+    }
+
+    // 处理返回键
+    @Override
+    public boolean onSupportNavigateUp() {
+        NavController navController = Navigation.findNavController(this, R.id.nav_host_fragment);
+        return navController.navigateUp() || super.onSupportNavigateUp();
     }
 }
 ```
 
-**注意事项：**
-- Compose Navigation 目前不支持多返回栈（Multi-Back Stack）开箱即用，需要自己处理
-- 避免在 ViewModel 里持有 NavController，会内存泄漏
-- 深链接记得在 Manifest 里配 `nav-graph` 属性
+**4. 在 Fragment 中跳转（使用 Safe Args）：**
+
+```java
+public class HomeFragment extends Fragment {
+
+    @Override
+    public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
+        super.onViewCreated(view, savedInstanceState);
+
+        NavController navController = Navigation.findNavController(view);
+
+        // 跳转到详情页，Safe Args 自动生成 HomeFragmentDirections
+        view.findViewById(R.id.btn_go_detail).setOnClickListener(v -> {
+            HomeFragmentDirections.ActionHomeToDetail action =
+                HomeFragmentDirections.actionHomeToDetail("item_123");
+            action.setFrom("home"); // 设置可选参数
+            navController.navigate(action);
+        });
+    }
+}
+
+// 在目标 Fragment 中接收参数
+public class DetailFragment extends Fragment {
+
+    @Override
+    public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
+        super.onViewCreated(view, savedInstanceState);
+
+        // Safe Args 自动生成参数类
+        DetailFragmentArgs args = DetailFragmentArgs.fromBundle(getArguments());
+        String itemId = args.getItemId();
+        String from = args.getFrom();
+    }
+}
+```
+
+**5. 深链接（从外部跳转）：**
+
+```java
+// 在 Activity 的 onCreate 中处理深链接 Intent
+@Override
+protected void onCreate(Bundle savedInstanceState) {
+    super.onCreate(savedInstanceState);
+    setContentView(R.layout.activity_main);
+
+    NavController navController = Navigation.findNavController(this, R.id.nav_host_fragment);
+
+    // 自动处理 NavGraph 中定义的 deepLink
+    navController.handleDeepLink(getIntent());
+}
+```
+
+#### 最佳实践
+
+- 导航图用 XML 定义（可视化编辑），复杂场景可以用代码动态创建
+- 传参**一定要用 Safe Args**，别手写 Bundle key，写错了运行时才崩
+- 避免在 ViewModel 里持有 NavController，会内存泄漏。NavController 应该只在 UI 层使用
+- 嵌套导航图（Navigation）用于模块化：比如底部导航的每个 Tab 有自己的子导航图
+- `app:defaultNavHost="true"` 让 NavHostFragment 拦截返回键，否则返回键会直接关闭 Activity
+
+#### 常见问题
+
+| 问题 | 原因 | 解决方案 |
+|------|------|---------|
+| 返回键直接关了 Activity | 没设 defaultNavHost 或没重写 onSupportNavigateUp | 设置 defaultNavHost="true" 并重写 onSupportNavigateUp |
+| 参数传错了 | 用了 Bundle 而不是 Safe Args | 用 Safe Args 插件 |
+| 底部导航切换时 Fragment 重建 | 没用正确的导航图结构 | 用嵌套导航图 + bottom navigation 模式 |
+| NavController 内存泄漏 | 在 ViewModel 中持有了 NavController | NavController 只在 UI 层使用 |
 
 ---
 
 ### 6. Paging 3
 
-**一句话定位：** 分页加载的"全家桶"，滚动到底自动加载下一页。
+#### 一句话定位
 
-**解决了什么问题：**
-加载大量数据（比如朋友圈、商品列表），不可能一次性全查出来。你得自己管理页码、处理加载状态、防止重复请求、做缓存……Paging 3 把这些全包了，你只需要告诉它"数据从哪来"。
+分页加载的"全家桶"，滚动到底自动加载下一页，内置缓存和错误处理。
 
-**核心原理：**
+#### 解决了什么问题
+
+加载大量数据（朋友圈、商品列表、搜索结果），不可能一次性全查出来。你得自己管理页码、处理加载状态（加载中/加载失败/没有更多）、防止重复请求、做内存缓存……Paging 3 把这些全包了，你只需要告诉它"数据从哪来"。
+
+#### 适用场景
+
+- 列表数据量大，需要分页加载（网络分页、数据库分页）
+- 需要自动预加载（用户还没滚到底就开始加载下一页）
+- 需要网络 + 本地缓存的分层数据源（先显示缓存，再更新网络数据）
+- 需要统一的加载状态管理（Loading、Error、Empty、Append、Prepend）
+
+#### 核心原理
 
 打个比方：Paging 就像自动续杯的咖啡机。杯子（UI）快喝完了，咖啡机（PagingSource）自动再倒一杯。你不用管什么时候该续、续多少、咖啡机忙不忙，它自己全处理好了。
 
-技术层面：
-- **三层架构**：
-  - `PagingSource`：数据源，定义怎么加载某一页（网络、数据库都行）
-  - `Pager`：根据配置生成 `PagingData` 流，协调数据加载
-  - `PagingDataAdapter` / `LazyPagingItems`：UI 层自动绑定和展示
-- `RemoteMediator`：处理"网络 + 本地缓存"的分层数据源
+技术层面——三层架构：
+
+```
+┌──────────────────────────────────────────────────────┐
+│                    UI 层                              │
+│  PagingDataAdapter (RecyclerView)                     │
+│  自动绑定数据、显示加载状态、处理空列表                 │
+├──────────────────────────────────────────────────────┤
+│                  ViewModel 层                         │
+│  Pager + PagingConfig                                 │
+│  根据配置生成 PagingData 流，协调数据加载              │
+├──────────────────────────────────────────────────────┤
+│                 Repository 层                         │
+│  PagingSource（数据源）                               │
+│  RemoteMediator（网络+本地缓存协调）                   │
+│  定义怎么加载某一页数据                                │
+└──────────────────────────────────────────────────────┘
+```
+
+- **PagingSource<Key, Value>**：数据源，`Key` 是页码类型（Integer、String），`Value` 是数据类型。定义 `load()` 方法，返回某一页的数据
+- **RemoteMediator**：处理"网络 + 本地缓存"的分层数据源。先显示 Room 缓存，后台请求网络，网络成功后更新数据库，数据库变化自动触发 UI 更新
+- **Pager**：根据 `PagingConfig`（页大小、预取距离等）生成 `PagingData` 流
+- **PagingDataAdapter**：RecyclerView 适配器，内置 `AsyncPagingDataDiffer`（内部用 DiffUtil），自动计算差异并更新
 - 内置内存缓存，已加载的页面不会重复请求
-- 自动处理加载状态：Loading、Append、Prepend、Error
-- `DiffUtil` 内置，只刷新变化的 Item
+- 自动处理加载状态：`LoadState`（Loading、NotLoading、Error）分为 refresh（首次加载）、append（加载更多）、prepend（向上加载）
 
-**关键 API：**
+#### Gradle 依赖
 
-| API | 用途 |
-|-----|------|
-| `PagingSource<Key, Value>` | 定义数据源 |
-| `RemoteMediator` | 网络+本地缓存的协调器 |
-| `Pager(config) { source }` | 构建 PagingData 流 |
-| `PagingConfig(pageSize)` | 配置页大小、预取距离 |
-| `collectAsLazyPagingItems()` | Compose 中收集分页数据 |
-| `PagingDataAdapter` | RecyclerView 适配器 |
-| `loadState` | 观察加载状态 |
+```groovy
+dependencies {
+    implementation "androidx.paging:paging-runtime:3.3.6"
+    // 可选：RxJava 支持
+    implementation "androidx.paging:paging-rxjava3:3.3.6"
+}
+```
 
-**代码示例：**
+#### 代码示例
 
-```kotlin
+**基础用法（网络分页）：**
+
+```java
 // 1. 定义数据源
-class ArticlePagingSource(
-    private val api: ArticleApi
-) : PagingSource<Int, Article>() {
-    override suspend fun load(params: LoadParams<Int>): LoadResult<Int, Article> {
-        val page = params.key ?: 1
-        return try {
-            val articles = api.getArticles(page = page, size = params.loadSize)
-            LoadResult.Page(
-                data = articles,
-                prevKey = if (page == 1) null else page - 1,
-                nextKey = if (articles.isEmpty()) null else page + 1
-            )
-        } catch (e: Exception) {
-            LoadResult.Error(e)
+public class ArticlePagingSource extends PagingSource<Integer, Article> {
+
+    private final ArticleApi api;
+
+    public ArticlePagingSource(ArticleApi api) {
+        this.api = api;
+    }
+
+    @Nullable
+    @Override
+    public Key getRefreshKey(@NonNull PagingState<Integer, Article> state) {
+        // 下拉刷新时从哪一页开始
+        Integer anchorPosition = state.getAnchorPosition();
+        if (anchorPosition == null) return null;
+
+        LoadResult.Page<Integer, Article> anchorPage = state.closestPageToPosition(anchorPosition);
+        if (anchorPage == null) return null;
+
+        return anchorPage.getPrevKey() != null
+            ? anchorPage.getPrevKey() + 1
+            : anchorPage.getNextKey() - 1;
+    }
+
+    @NonNull
+    @Override
+    public Single<LoadResult<Integer, Article>> loadSingle(@NonNull LoadParams<Integer> params) {
+        int page = params.getKey() != null ? params.getKey() : 1;
+        int loadSize = params.getLoadSize();
+
+        return api.getArticles(page, loadSize)
+            .map(response -> {
+                List<Article> articles = response.getArticles();
+                int nextKey = articles.isEmpty() ? null : page + 1;
+                int prevKey = page == 1 ? null : page - 1;
+                return new LoadResult.Page<>(articles, prevKey, nextKey);
+            })
+            .onErrorReturn(LoadResult.Error::new);
+    }
+}
+
+// 2. 定义 Adapter
+public class ArticleAdapter extends PagingDataAdapter<Article, ArticleViewHolder> {
+
+    public ArticleAdapter() {
+        super(new DiffUtil.ItemCallback<Article>() {
+            @Override
+            public boolean areItemsTheSame(@NonNull Article oldItem, @NonNull Article newItem) {
+                return oldItem.getId().equals(newItem.getId());
+            }
+
+            @Override
+            public boolean areContentsTheSame(@NonNull Article oldItem, @NonNull Article newItem) {
+                return oldItem.equals(newItem);
+            }
+        });
+    }
+
+    @NonNull
+    @Override
+    public ArticleViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+        ItemArticleBinding binding = ItemArticleBinding.inflate(
+            LayoutInflater.from(parent.getContext()), parent, false);
+        return new ArticleViewHolder(binding);
+    }
+
+    @Override
+    public void onBindViewHolder(@NonNull ArticleViewHolder holder, int position) {
+        Article article = getItem(position);
+        if (article != null) {
+            holder.bind(article);
         }
     }
 }
 
-// 2. ViewModel 中构建
-val pager = Pager(PagingConfig(pageSize = 20, prefetchDistance = 5)) {
-    ArticlePagingSource(api)
-}
-val pagingData: Flow<PagingData<Article>> = pager.flow
+// 3. ViewModel 中构建
+public class ArticleListViewModel extends ViewModel {
 
-// 3. Compose 中展示
-val lazyItems = pagingData.collectAsLazyPagingItems()
-LazyColumn {
-    items(lazyItems.itemCount) { index ->
-        ArticleCard(article = lazyItems[index]!!)
+    private final PagingConfig config = new PagingConfig(
+        20,     // pageSize：每页多少条
+        5,      // prefetchDistance：距离底部多少条时预加载
+        false,  // enablePlaceholders：是否显示占位符
+        20      // initialLoadSize：首次加载多少条
+    );
+
+    private final RxPagingSource<Integer, Article> pagingSource;
+    private final Flowable<PagingData<Article>> pagingDataFlow;
+
+    public ArticleListViewModel(ArticleApi api) {
+        ArticlePagingSource source = new ArticlePagingSource(api);
+        Pager<Integer, Article> pager = new Pager<>(config, () -> source);
+        pagingDataFlow = Pager.createFlowable(config, () -> source);
     }
-    // 加载状态处理
-    lazyItems.apply {
-        when {
-            loadState.refresh is LoadState.Loading -> { /* 首次加载中 */ }
-            loadState.append is LoadState.Loading -> { /* 加载更多中 */ }
-            loadState.refresh is LoadState.Error -> { /* 加载失败 */ }
+
+    public Flowable<PagingData<Article>> getPagingData() {
+        return pagingDataFlow;
+    }
+}
+
+// 4. Activity 中使用
+public class ArticleListActivity extends AppCompatActivity {
+
+    private ArticleAdapter adapter = new ArticleAdapter();
+    private final CompositeDisposable disposables = new CompositeDisposable();
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_article_list);
+
+        RecyclerView recyclerView = findViewById(R.id.recycler_view);
+        recyclerView.setLayoutManager(new LinearLayoutManager(this));
+        recyclerView.setAdapter(adapter);
+
+        // 添加加载状态监听
+        adapter.addLoadStateListener(loadStates -> {
+            LoadState refresh = loadStates.getRefresh();
+            LoadState append = loadStates.getAppend();
+
+            if (refresh instanceof LoadState.Loading) {
+                // 首次加载中
+                progressBar.setVisibility(View.VISIBLE);
+            } else if (refresh instanceof LoadState.Error) {
+                // 首次加载失败
+                progressBar.setVisibility(View.GONE);
+                errorView.setVisibility(View.VISIBLE);
+                String errorMsg = ((LoadState.Error) refresh).getError().getMessage();
+                errorText.setText("加载失败: " + errorMsg);
+            } else {
+                // 加载成功
+                progressBar.setVisibility(View.GONE);
+                errorView.setVisibility(View.GONE);
+            }
+
+            if (append instanceof LoadState.Loading) {
+                // 加载更多中（显示底部 loading）
+                footerLoading.setVisibility(View.VISIBLE);
+            } else {
+                footerLoading.setVisibility(View.GONE);
+            }
+        });
+
+        // 重试按钮
+        retryButton.setOnClickListener(v -> adapter.retry());
+
+        // 观察 PagingData
+        ArticleListViewModel viewModel = new ViewModelProvider(this).get(ArticleListViewModel.class);
+        disposables.add(
+            viewModel.getPagingData()
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe(pagingData -> adapter.submitData(getLifecycle(), pagingData))
+        );
+    }
+
+    @Override
+    protected void onDestroy() {
+        disposables.clear();
+        super.onDestroy();
+    }
+}
+```
+
+**带 LoadState Footer 的 Adapter：**
+
+```java
+// 在列表底部显示加载状态
+public class ArticleAdapterWithFooter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+
+    private static final int TYPE_ITEM = 0;
+    private static final int TYPE_FOOTER = 1;
+
+    private final ArticleAdapter adapter;
+    private final LoadStateAdapter<RecyclerView.ViewHolder> footerAdapter;
+
+    // 使用 ConcatAdapter 合并数据 Adapter 和 Footer Adapter
+    public ConcatAdapter getConcatAdapter() {
+        return new ConcatAdapter(adapter, footerAdapter);
+    }
+}
+
+// Footer Adapter
+public class ArticleLoadStateAdapter extends LoadStateAdapter<RecyclerView.ViewHolder> {
+
+    @NonNull
+    @Override
+    public RecyclerView.ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, @NonNull LoadState loadState) {
+        ItemLoadStateFooterBinding binding = ItemLoadStateFooterBinding.inflate(
+            LayoutInflater.from(parent.getContext()), parent, false);
+        return new FooterViewHolder(binding);
+    }
+
+    @Override
+    public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, @NonNull LoadState loadState) {
+        FooterViewHolder vh = (FooterViewHolder) holder;
+        if (loadState instanceof LoadState.Loading) {
+            vh.binding.progressBar.setVisibility(View.VISIBLE);
+            vh.binding.errorText.setVisibility(View.GONE);
+            vh.binding.retryButton.setVisibility(View.GONE);
+        } else if (loadState instanceof LoadState.Error) {
+            vh.binding.progressBar.setVisibility(View.GONE);
+            vh.binding.errorText.setVisibility(View.VISIBLE);
+            vh.binding.retryButton.setVisibility(View.VISIBLE);
+        } else {
+            vh.binding.progressBar.setVisibility(View.GONE);
+            vh.binding.errorText.setVisibility(View.GONE);
+            vh.binding.retryButton.setVisibility(View.GONE);
         }
     }
 }
 ```
 
-**注意事项：**
-- `pageSize` 建议设为 `prefetchDistance` 的 2~3 倍
-- 网络分页用 `PagingSource`，网络+本地缓存用 `RemoteMediator`
-- Paging 3 完全基于 Kotlin 协程和 Flow，不支持 RxJava
+#### 最佳实践
+
+- `pageSize` 建议设为 `prefetchDistance` 的 2~3 倍，确保用户滚到底之前数据已经加载好
+- 网络分页用 `PagingSource`，网络 + 本地缓存用 `RemoteMediator`
+- Java 项目推荐用 `paging-rxjava3` 版本，API 更友好
+- `PagingDataAdapter.submitData()` 需要传入 `Lifecycle`，确保在页面可见时才更新数据
+- `adapter.retry()` 可以方便地重试失败的加载
+
+#### 常见问题
+
+| 问题 | 原因 | 解决方案 |
+|------|------|---------|
+| 数据闪烁 | submitData 被多次调用 | 确保 PagingData 只提交一次 |
+| 加载状态不更新 | 没有通过 addLoadStateListener 监听 | 注册 LoadState 监听器 |
+| RxJava 版本不兼容 | 混用了 RxJava2 和 RxJava3 | 统一用 RxJava3 |
 
 ---
 
-### 7. Hilt
+### 7. Hilt（Dagger Hilt）
 
-**一句话定位：** Android 版的依赖注入工具，自动帮你把需要的对象"注入"到正确的地方。
+#### 一句话定位
 
-**解决了什么问题：**
-一个 Activity 可能需要 Repository、ViewModel、网络客户端……以前你得手动 new 出来一层层传递，或者写单例，代码耦合严重还不好测试。Hilt 让你声明"我需要什么"，它自动帮你创建和注入。
+Android 版的依赖注入工具，自动帮你把需要的对象"注入"到正确的地方。
 
-**核心原理：**
+#### 解决了什么问题
+
+一个 Activity 可能需要 Repository、ViewModel、网络客户端、数据库……以前你得手动 new 出来一层层传递，或者写单例，代码耦合严重还不好测试。Hilt 让你声明"我需要什么"，它自动帮你创建和注入。
+
+#### 适用场景
+
+- 需要在多个地方共享同一个实例（如 Retrofit、OkHttpClient、Database）
+- 需要解耦以便单元测试（可以注入 Mock 对象）
+- ViewModel、Repository、Service 等需要依赖外部资源
+- 大型项目，手动管理依赖太痛苦
+
+#### 核心原理
 
 打个比方：Hilt 就像外卖平台。你（Activity）只需要在门口贴个单子说"我要一杯咖啡"（@Inject），外卖平台（Hilt）会自动找到能做咖啡的店（@Module），做好送到你手上。你不用管咖啡怎么做、用哪家店、送餐路线怎么走。
 
 技术层面：
-- 编译时通过 KSP 生成 Dagger 组件代码（不是运行时反射，性能好）
+
+- 编译时通过 KSP 生成 Dagger 组件代码（不是运行时反射，所以性能好）
 - `@HiltAndroidApp` 在 Application 上触发，生成应用级依赖容器（根组件）
-- `@AndroidEntryPoint` 给每个 Android 类生成子容器，从父容器获取依赖
-- 组件层级：`SingletonComponent` → `ActivityComponent` → `FragmentComponent` → `ViewComponent`
+- `@AndroidEntryPoint` 给每个 Android 类生成子容器，从父组件获取依赖
+- **组件层级**（从上到下，子组件可以访问父组件的依赖）：
+
+```
+SingletonComponent（Application 级，生命周期 = App 进程）
+  ├── ActivityComponent（Activity 级，生命周期 = Activity）
+  │     ├── FragmentComponent（Fragment 级，生命周期 = Fragment 视图）
+  │     └── ViewComponent（View 级，生命周期 = View）
+  ├── ServiceComponent（Service 级，生命周期 = Service）
+  └── ViewModelComponent（ViewModel 级，生命周期 = ViewModel）
+```
+
 - `@Inject constructor` 告诉 Hilt "这个类可以自动创建"
-- `@Module + @Provides` 告诉 Hilt "这个类的创建方式比较复杂，按我说的来"
+- `@Module + @Provides` 告诉 Hilt "这个类的创建方式比较复杂（第三方库、接口等），按我说的来"
+- `@Binds` 告诉 Hilt "这个接口的实现类是这个"（比 @Provides 更高效）
+- `@Qualifier` 用于区分同一类型的不同实例（如两个不同的 OkHttpClient）
 
-**关键 API：**
+#### Gradle 依赖
 
-| API | 用途 |
-|-----|------|
-| `@HiltAndroidApp` | 标记 Application，触发代码生成 |
-| `@AndroidEntryPoint` | 标记需要注入的 Android 类 |
-| `@HiltViewModel` | 标记 ViewModel |
-| `@Inject constructor(...)` | 构造函数注入 |
-| `@Module` + `@InstallIn` | 定义依赖提供模块 |
-| `@Provides` | 提供实例 |
-| `@Binds` | 接口绑定实现类 |
-| `@Qualifier` | 区分同一类型的不同实例 |
+```groovy
+dependencies {
+    implementation 'com.google.dagger:hilt-android:2.51.1'
+    annotationProcessor 'com.google.dagger:hilt-compiler:2.51.1'
+}
 
-**代码示例：**
+// build.gradle（项目级）
+plugins {
+    id 'com.google.dagger.hilt.android' version '2.51.1' apply false
+}
 
-```kotlin
-// 1. Application
+// build.gradle（模块级）
+plugins {
+    id 'com.google.dagger.hilt.android'
+}
+```
+
+#### 代码示例
+
+**基础用法：**
+
+```java
+// 1. Application 类上加 @HiltAndroidApp
 @HiltAndroidApp
-class MyApp : Application()
+public class MyApplication extends Application {
+}
 
 // 2. 需要注入的类（构造函数注入）
-class AnalyticsService @Inject constructor(
-    private val retrofit: Retrofit
-) {
-    fun trackEvent(event: String) { /* ... */ }
-}
+public class AnalyticsService {
 
-// 3. 提供复杂依赖的模块
-@Module
-@InstallIn(SingletonComponent::class)
-object NetworkModule {
-    @Provides
-    @Singleton
-    fun provideRetrofit(): Retrofit =
-        Retrofit.Builder()
-            .baseUrl("https://api.example.com/")
-            .addConverterFactory(GsonConverterFactory.create())
-            .build()
-}
+    private final Retrofit retrofit;
 
-// 4. 在 Activity 中使用
-@AndroidEntryPoint
-class MainActivity : AppCompatActivity() {
-    @Inject lateinit var analytics: AnalyticsService
+    @Inject  // 告诉 Hilt：这个类可以通过构造函数创建
+    public AnalyticsService(Retrofit retrofit) {
+        this.retrofit = retrofit;
+    }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        analytics.trackEvent("page_view")
+    public void trackEvent(String event) {
+        // ...
     }
 }
 
-// 5. 在 ViewModel 中使用
+// 3. 提供第三方库实例的 Module
+@Module
+@InstallIn(SingletonComponent.class)  // 绑定到 Application 级别
+public class NetworkModule {
+
+    @Provides
+    @Singleton  // 全局单例
+    public OkHttpClient provideOkHttpClient() {
+        return new OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .addInterceptor(new HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY))
+            .build();
+    }
+
+    @Provides
+    @Singleton
+    public Retrofit provideRetrofit(OkHttpClient okHttpClient) {
+        // 参数 okHttpClient 会自动从上面的 provideOkHttpClient() 获取
+        return new Retrofit.Builder()
+            .baseUrl("https://api.example.com/")
+            .client(okHttpClient)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build();
+    }
+
+    @Provides
+    @Singleton
+    public ArticleApi provideArticleApi(Retrofit retrofit) {
+        return retrofit.create(ArticleApi.class);
+    }
+}
+
+// 4. 在 Activity 中使用（字段注入）
+@AndroidEntryPoint
+public class MainActivity extends AppCompatActivity {
+
+    @Inject  // 字段注入，Hilt 会自动赋值
+    AnalyticsService analyticsService;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        // 此时 analyticsService 已经被注入了
+        analyticsService.trackEvent("page_view");
+    }
+}
+
+// 5. 在 Fragment 中使用
+@AndroidEntryPoint
+public class UserFragment extends Fragment {
+
+    @Inject
+    AnalyticsService analyticsService;
+
+    // ...
+}
+
+// 6. 在 ViewModel 中使用（必须用 @HiltViewModel）
 @HiltViewModel
-class UserViewModel @Inject constructor(
-    private val repository: UserRepository
-) : ViewModel() { /* ... */ }
+public class UserViewModel extends ViewModel {
+
+    private final UserRepository repository;
+    private final AnalyticsService analyticsService;
+
+    @Inject  // ViewModel 的构造函数注入
+    public UserViewModel(UserRepository repository, AnalyticsService analyticsService) {
+        this.repository = repository;
+        this.analyticsService = analyticsService;
+    }
+}
 ```
 
-**注意事项：**
-- ViewModel 必须用 `@HiltViewModel`，不能用 `@AndroidEntryPoint`
-- `@Module` 的 `@InstallIn` 决定了作用域，别乱用 `SingletonComponent`
-- 界面多的时候 Hilt 启动会慢（编译时生成代码多），可以考虑 Koin 做轻量替代
+**接口绑定（@Binds）：**
+
+```java
+// 定义接口
+public interface UserRepository {
+    LiveData<User> getUser(String userId);
+}
+
+// 实现类
+public class UserRepositoryImpl implements UserRepository {
+
+    private final ArticleApi api;
+    private final AppDatabase db;
+
+    @Inject
+    public UserRepositoryImpl(ArticleApi api, AppDatabase db) {
+        this.api = api;
+        this.db = db;
+    }
+
+    @Override
+    public LiveData<User> getUser(String userId) {
+        // ...
+    }
+}
+
+// 用 @Binds 绑定接口和实现（比 @Provides 更高效，不生成额外代码）
+@Module
+@InstallIn(SingletonComponent.class)
+public abstract class RepositoryModule {
+
+    @Binds
+    @Singleton
+    public abstract UserRepository bindUserRepository(UserRepositoryImpl impl);
+}
+```
+
+**@Qualifier 区分同一类型的不同实例：**
+
+```java
+// 定义 Qualifier
+@Qualifier
+@Retention(RetentionPolicy.RUNTIME)
+public @interface AuthOkHttpClient {}
+
+@Qualifier
+@Retention(RetentionPolicy.RUNTIME)
+public @interface NormalOkHttpClient {}
+
+// Module 中提供两个不同的 OkHttpClient
+@Module
+@InstallIn(SingletonComponent.class)
+public class NetworkModule {
+
+    @Provides
+    @Singleton
+    @AuthOkHttpClient
+    public OkHttpClient provideAuthOkHttpClient() {
+        return new OkHttpClient.Builder()
+            .addInterceptor(new AuthInterceptor())  // 带认证拦截器
+            .build();
+    }
+
+    @Provides
+    @Singleton
+    @NormalOkHttpClient
+    public OkHttpClient provideNormalOkHttpClient() {
+        return new OkHttpClient.Builder()
+            .build();  // 普通客户端
+    }
+}
+
+// 使用时指定 Qualifier
+public class AuthService {
+
+    private final OkHttpClient client;
+
+    @Inject
+    public AuthService(@AuthOkHttpClient OkHttpClient client) {
+        this.client = client;
+    }
+}
+```
+
+**@Named 替代 @Qualifier（简化写法）：**
+
+```java
+@Module
+@InstallIn(SingletonComponent.class)
+public class NetworkModule {
+
+    @Provides
+    @Singleton
+    @Named("auth")
+    public OkHttpClient provideAuthClient() { /* ... */ }
+
+    @Provides
+    @Singleton
+    @Named("normal")
+    public OkHttpClient provideNormalClient() { /* ... */ }
+}
+
+// 使用
+@Inject
+public AuthService(@Named("auth") OkHttpClient client) { /* ... */ }
+```
+
+#### 最佳实践
+
+- ViewModel **必须**用 `@HiltViewModel`，不能用 `@AndroidEntryPoint`
+- `@Module` 的 `@InstallIn` 决定了作用域，别什么都在 `SingletonComponent` 里
+- 接口绑定优先用 `@Binds`（更高效），复杂对象用 `@Provides`
+- 字段注入的变量不能是 `private`（Hilt 需要直接赋值）
+- 测试时可以用 `@UninstallModules` 替换 Module，注入 Mock 对象
+
+#### 常见问题
+
+| 问题 | 原因 | 解决方案 |
+|------|------|---------|
+| ViewModel 注入失败 | 用了 @AndroidEntryPoint 而不是 @HiltViewModel | ViewModel 用 @HiltViewModel |
+| 编译报错找不到依赖 | Module 没有正确 InstallIn | 检查 @InstallIn 的组件 |
+| 字段注入为 null | 字段是 private | Hilt 不支持 private 字段注入 |
+| 编译慢 | Hilt 生成大量代码 | 可以考虑 Koin 做轻量替代 |
 
 ---
 
 ## 二、UI 类
 
-### 8. Jetpack Compose
-
-**一句话定位：** Android 的新一代 UI 框架，用 Kotlin 代码写界面，告别 XML。
-
-**解决了什么问题：**
-传统 View 体系用 XML 写布局、Java/Kotlin 写逻辑，状态一变就要 `findViewById` + 手动更新 UI，代码散落各处还容易出 bug。Compose 用声明式的方式——你描述 UI 长什么样，状态变了它自动帮你刷新该刷新的部分。
-
-**核心原理：**
-
-打个比方：传统 View 体系像手工作坊——状态变了你得自己拿锤子去敲对应的 UI 元素。Compose 像流水线——你给一个设计图纸（@Composable 函数），原材料（状态）一变，流水线自动重新生产受影响的部分，其他没变的直接复用。
-
-技术层面：
-- `@Composable` 函数描述 UI，Compose 编译器插件将其转换为高效的树结构
-- **重组（Recomposition）**：状态变化时，Compose 只重新执行受影响的 Composable 函数，不会全量刷新
-- **智能跳过（Skipping）**：如果 Composable 的参数没变，整个函数直接跳过
-- 内部用 **Slot Table** 数据结构跟踪组合状态，高效定位需要更新的节点
-- `remember` 跨重组保持值，`mutableStateOf` 创建可观察状态
-- `Modifier` 链式 API 统一处理尺寸、间距、点击、滚动等所有 UI 属性
-
-**关键 API：**
-
-| API | 用途 |
-|-----|------|
-| `@Composable` | 标记可组合函数 |
-| `mutableStateOf()` | 创建可观察状态 |
-| `remember { }` | 跨重组保持值 |
-| `derivedStateOf { }` | 派生状态，避免不必要的重组 |
-| `LaunchedEffect` | 启动协程副作用 |
-| `DisposableEffect` | 注册/清理副作用 |
-| `CompositionLocal` | 隐式传递数据（类似 Context） |
-| `Modifier` | 声明式 UI 修饰链 |
-
-**代码示例：**
-
-```kotlin
-@Composable
-fun UserListScreen(viewModel: UserViewModel) {
-    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-
-    // 只在第一次进入时加载
-    LaunchedEffect(Unit) {
-        viewModel.loadUsers()
-    }
-
-    when {
-        uiState.isLoading -> CircularProgressIndicator()
-        uiState.error != null -> Text("出错了: ${uiState.error}")
-        else -> LazyColumn {
-            items(uiState.users) { user ->
-                UserCard(
-                    user = user,
-                    onClick = { viewModel.openDetail(user.id) },
-                    modifier = Modifier.fillMaxWidth().padding(16.dp)
-                )
-            }
-        }
-    }
-}
-```
-
-**注意事项：**
-- Composable 函数不要有副作用（直接改外部变量、发网络请求等），用 `LaunchedEffect` 包
-- 列表项用 `key { item.id }` 帮助 Compose 高效复用
-- `remember` 不带 key 的话只在首次组合时执行，带 key 则 key 变化时重新执行
-- 性能优化核心：减少重组范围 → 提取小 Composable、用 `remember`、用 `derivedStateOf`
-
 ---
 
-### 9. Material 3
+### 8. ViewBinding
 
-**一句话定位：** Google 的设计规范在 Compose 中的实现，一套代码搞定主题和组件。
+#### 一句话定位
 
-**解决了什么问题：**
-以前要统一 App 的配色、字体、圆角，得自己定义一堆 style 和 theme，维护起来很痛苦。Material 3 把这些全部标准化了——你只需要定义一套配色方案，所有组件自动适配。
+自动为每个 XML 布局生成类型安全的绑定类，告别 `findViewById`。
 
-**核心原理：**
+#### 解决了什么问题
 
-打个比方：Material 3 就像一个装修公司的标准套餐。你选一个主色调（ColorScheme），它自动帮你把墙壁、家具、灯饰全部搭配好。Android 12+ 还支持"动态取色"——根据用户的壁纸自动生成配色，每换一张壁纸 App 换一套风格。
+`findViewById` 有三大痛点：
+1. 返回 `View`，你得手动强转类型，转错了运行时才崩
+2. ID 写错了运行时才崩（返回 null，调方法就 NPE）
+3. 每个 View 都得调一次，代码又长又丑
 
-技术层面：
-- `MaterialTheme` 是主题容器，提供三大子系统：
-  - `ColorScheme`：配色方案（primary、secondary、surface、background 等）
-  - `Typography`：排版系统（headlineLarge、bodyMedium、labelSmall 等）
-  - `Shapes`：形状系统（卡片、按钮的圆角大小）
-- Android 12+ 的 `dynamicLightColorScheme()` 从壁纸取色
-- 所有 M3 组件（Button、Card、NavigationBar 等）内部读取 `MaterialTheme` 的值
+ViewBinding 编译时扫描 XML，生成绑定类，每个有 ID 的 View 都是**正确类型**的属性，空指针和类型转换错误在**编译时**就能发现。
 
-**代码示例：**
+#### 适用场景
 
-```kotlin
-@Composable
-fun MyAppTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
-    // Android 12+ 用动态取色，低版本用自定义配色
-    val colorScheme = when {
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-        darkTheme -> darkColorScheme(
-            primary = Color(0xFFBB86FC),
-            secondary = Color(0xFF03DAC6)
-        )
-        else -> lightColorScheme(
-            primary = Color(0xFF6200EE),
-            secondary = Color(0xFF03DAC6)
-        )
-    }
+- 所有使用 XML 布局的 Activity 和 Fragment
+- 替代 `findViewById` 和 `kotlinx.android.synthetic`（已废弃）
+- 需要 RecyclerView Adapter 中访问 Item 布局的 View
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography(),  // 用默认排版，或自定义
-        shapes = Shapes(),          // 用默认形状，或自定义
-        content = content
-    )
-}
+#### 核心原理
 
-// 使用组件
-@Composable
-fun MyButton() {
-    Button(onClick = { /* ... */ }) {
-        Text("确定", style = MaterialTheme.typography.labelLarge)
+编译时 Gradle 插件扫描每个 XML 布局文件，根据文件名生成绑定类：
+- `activity_main.xml` → `ActivityMainBinding`
+- `fragment_profile.xml` → `FragmentProfileBinding`
+- `item_user.xml` → `ItemUserBinding`
+
+绑定类的 `inflate()` 内部调用 `LayoutInflater.inflate()`，然后对每个有 `android:id` 的 View 做 `findViewById` 并缓存到成员变量中。本质上是帮你写了 `findViewById` 的样板代码，但加了类型安全和空安全。
+
+**ViewBinding vs DataBinding vs findViewById：**
+
+| 特性 | findViewById | DataBinding | ViewBinding |
+|------|-------------|-------------|-------------|
+| 类型安全 | ❌ 需要强转 | ✅ | ✅ |
+| 空安全 | ❌ 可能 NPE | ✅ | ✅ |
+| 编译时检查 | ❌ | ✅ | ✅ |
+| XML 中绑定数据 | ❌ | ✅ | ❌ |
+| 性能 | 一般 | 较差（编译生成大量代码） | 好 |
+| 使用复杂度 | 简单 | 复杂 | 简单 |
+
+#### Gradle 配置
+
+```groovy
+android {
+    buildFeatures {
+        viewBinding = true
     }
 }
+
+// 如果只想为特定布局生成，在 XML 根节点加：
+// tools:viewBindingIgnore="true"
 ```
 
-**注意事项：**
-- 动态取色只支持 Android 12+，低版本需要自己定义 fallback 配色
-- M3 的 `ExperimentalMaterial3Api` 很多组件还在实验阶段，升级大版本时注意 API 变化
-- 自定义主题时别直接改组件颜色，改 `ColorScheme` 让组件自动适配
+#### 代码示例
 
----
+**Activity 中使用：**
 
-### 10. Compose Navigation
+```java
+public class MainActivity extends AppCompatActivity {
 
-**一句话定位：** Navigation 组件的 Compose 版，在 Composable 函数之间跳转。
+    private ActivityMainBinding binding;
 
-**核心原理：**
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        // inflate + setContentView 一步到位
+        binding = ActivityMainBinding.inflate(getLayoutInflater());
+        setContentView(binding.getRoot());
 
-跟 Fragment 版的 Navigation 原理一样（NavGraph + NavController + NavHost），只是宿主从 Fragment 换成了 Composable 函数。推荐用 `@Serializable` 数据类定义路由，编译时类型检查，传参不会写错。
-
-**代码示例：**
-
-```kotlin
-@Serializable data class Profile(val userId: String)
-@Serializable data class Settings(val from: String)
-
-@Composable
-fun AppNavigation() {
-    val navController = rememberNavController()
-
-    NavHost(navController = navController, startDestination = Profile(userId = "me")) {
-        composable<Profile> { entry ->
-            val profile = entry.toRoute<Profile>()
-            ProfileScreen(
-                userId = profile.userId,
-                onNavigateToSettings = { navController.navigate(Settings(from = "profile")) }
-            )
-        }
-        composable<Settings> { entry ->
-            val settings = entry.toRoute<Settings>()
-            SettingsScreen(onBack = { navController.popBackStack() })
-        }
-    }
-}
-```
-
-**注意事项：**
-- 路由参数必须是可序列化的基本类型或 `@Serializable` 类
-- 底部导航栏配合 `NavigationBar` + `NavigationSuiteScaffold` 使用
-- 嵌套导航图用 `navigation(startDestination, route) { }` 包裹
-
----
-
-### 11. ViewBinding
-
-**一句话定位：** 自动为每个 XML 布局生成类型安全的绑定类，告别 `findViewById`。
-
-**解决了什么问题：**
-`findViewById` 返回 View，你得强转类型，ID 写错了运行时才崩。ViewBinding 编译时生成绑定类，每个有 ID 的 View 都是正确类型的属性，空指针和类型转换错误在编译时就能发现。
-
-**核心原理：**
-
-编译时 Gradle 插件扫描每个 XML 布局文件，根据文件名生成绑定类（`activity_main.xml` → `ActivityMainBinding`）。绑定类的 `inflate()` 内部调用 `LayoutInflater.inflate()`，然后对每个有 ID 的 View 做 `findViewById` 并缓存。本质上是帮你写了 `findViewById` 的样板代码。
-
-**代码示例：**
-
-```kotlin
-// Activity 中
-class MainActivity : AppCompatActivity() {
-    private lateinit var binding: ActivityMainBinding
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
         // 直接用，类型安全，不会 NPE
-        binding.titleText.text = "Hello"
-        binding.submitButton.setOnClickListener { /* ... */ }
-    }
-}
+        binding.titleText.setText("Hello World");
+        binding.subtitleText.setText("Jetpack ViewBinding");
 
-// Fragment 中（注意在 onDestroyView 清理引用）
-class MyFragment : Fragment(R.layout.fragment_my) {
-    private var _binding: FragmentMyBinding? = null
-    private val binding get() = _binding!!
+        binding.submitButton.setOnClickListener(v -> {
+            String input = binding.inputEditText.getText().toString();
+            // 处理点击
+        });
 
-    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        super.onViewCreated(view, savedInstanceState)
-        _binding = FragmentMyBinding.bind(view)
-        binding.textView.text = "Hello"
-    }
-
-    override fun onDestroyView() {
-        super.onDestroyView()
-        _binding = null  // Fragment 的视图可能比 Fragment 本身先销毁
+        binding.recyclerView.setLayoutManager(new LinearLayoutManager(this));
+        binding.recyclerView.setAdapter(new MyAdapter());
     }
 }
 ```
 
-**注意事项：**
-- Fragment 里一定要在 `onDestroyView` 置 null，否则内存泄漏
-- ViewBinding 比 DataBinding 轻量，不需要在 XML 里写 `<layout>` 和 `<data>`
-- 新项目如果全用 Compose，就不需要 ViewBinding 了
+**Fragment 中使用（重点：必须在 onDestroyView 清理）：**
+
+```java
+public class ProfileFragment extends Fragment {
+
+    private FragmentProfileBinding binding;
+
+    @Override
+    public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container,
+                             @Nullable Bundle savedInstanceState) {
+        binding = FragmentProfileBinding.inflate(inflater, container, false);
+        return binding.getRoot();
+    }
+
+    @Override
+    public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
+        super.onViewCreated(view, savedInstanceState);
+
+        binding.nameText.setText("张三");
+        binding.ageText.setText("25");
+
+        binding.editButton.setOnClickListener(v -> {
+            String name = binding.nameText.getText().toString();
+            // 编辑操作
+        });
+    }
+
+    @Override
+    public void onDestroyView() {
+        super.onDestroyView();
+        binding = null;  // 必须置 null！Fragment 的视图可能比 Fragment 本身先销毁
+    }
+}
+```
+
+**RecyclerView Adapter 中使用：**
+
+```java
+public class UserAdapter extends RecyclerView.Adapter<UserAdapter.ViewHolder> {
+
+    private List<User> users = new ArrayList<>();
+
+    public void submitList(List<User> newUsers) {
+        users = newUsers;
+        notifyDataSetChanged();
+    }
+
+    @NonNull
+    @Override
+    public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+        ItemUserBinding binding = ItemUserBinding.inflate(
+            LayoutInflater.from(parent.getContext()), parent, false);
+        return new ViewHolder(binding);
+    }
+
+    @Override
+    public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
+        holder.bind(users.get(position));
+    }
+
+    @Override
+    public int getItemCount() {
+        return users.size();
+    }
+
+    static class ViewHolder extends RecyclerView.ViewHolder {
+
+        private final ItemUserBinding binding;
+
+        ViewHolder(ItemUserBinding binding) {
+            super(binding.getRoot());
+            this.binding = binding;
+        }
+
+        void bind(User user) {
+            binding.nameText.setText(user.getName());
+            binding.emailText.setText(user.getEmail());
+            binding.avatarImageView.setImageResource(user.getAvatarRes());
+        }
+    }
+}
+```
+
+**Dialog 中使用：**
+
+```java
+public class ConfirmDialog extends Dialog {
+
+    private DialogConfirmBinding binding;
+
+    public ConfirmDialog(@NonNull Context context) {
+        super(context);
+    }
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        binding = DialogConfirmBinding.inflate(getLayoutInflater());
+        setContentView(binding.getRoot());
+
+        binding.titleText.setText("确认操作");
+        binding.messageText.setText("你确定要执行此操作吗？");
+        binding.cancelButton.setOnClickListener(v -> dismiss());
+        binding.confirmButton.setOnClickListener(v -> {
+            // 确认操作
+            dismiss();
+        });
+    }
+}
+```
+
+#### 最佳实践
+
+- Fragment 里**一定要**在 `onDestroyView` 中把 binding 置 null，否则内存泄漏（Fragment 的视图被销毁但 Fragment 对象还在，binding 持有视图引用）
+- ViewBinding 比 DataBinding 轻量，不需要在 XML 里写 `<layout>` 和 `<data>` 标签
+- 如果不需要在 XML 里绑定数据，就用 ViewBinding，别用 DataBinding
+- Adapter 的 ViewHolder 中持有 binding 引用，比直接持有 View 更清晰
+
+#### 常见问题
+
+| 问题 | 原因 | 解决方案 |
+|------|------|---------|
+| Fragment 内存泄漏 | onDestroyView 没置 null | binding = null |
+| 找不到绑定类 | ViewBinding 没开启 | buildFeatures { viewBinding = true } |
+| 某些布局不想生成绑定类 | 不需要 | XML 根节点加 tools:viewBindingIgnore="true" |
 
 ---
 
-### 12. Fragment
+### 9. Fragment
 
-**一句话定位：** Activity 里的"可插拔模块"，有自己的生命周期和布局。
+#### 一句话定位
 
-**核心原理：**
+Activity 里的"可插拔模块"，有自己的生命周期和布局，可以复用和组合。
+
+#### 解决了什么问题
+
+一个页面可能很复杂（比如一个页面同时显示列表和详情），全写在一个 Activity 里代码量爆炸。Fragment 把页面拆成多个独立模块，每个模块有自己的布局和逻辑，可以复用（比如同一个 Fragment 在手机上全屏、在平板上并排显示）。
+
+#### 适用场景
+
+- 页面模块化（一个页面由多个 Fragment 组成）
+- 多面板布局（手机单列、平板双列）
+- 底部导航栏切换页面
+- ViewPager + Fragment 实现滑动切换
+- Dialog（DialogFragment）
+- Fragment 间通信（共享 ViewModel）
+
+#### 核心原理
 
 Fragment 不能独立存在，必须住在 Activity 里。它有自己的生命周期（比 Activity 多了 `onCreateView` 和 `onDestroyView`），视图可以独立创建和销毁。`FragmentManager` 管理所有 Fragment 的事务和返回栈。
 
-**关键生命周期：**
+**Fragment 生命周期（比 Activity 多了两步）：**
+
 ```
-onAttach → onCreate → onCreateView → onViewCreated →
-onStart → onResume → onPause → onStop →
-onDestroyView → onDestroy → onDetach
+Activity:    onCreate → onResume → onPause → onDestroy
+Fragment:    onAttach → onCreate → onCreateView → onViewCreated →
+             onStart → onResume → onPause → onStop →
+             onDestroyView → onDestroy → onDetach
 ```
 
-**代码示例：**
+关键区别：
+- `onDestroyView`：Fragment 的视图被销毁（比如被 replace 了），但 Fragment 对象还在
+- `onDestroy`：Fragment 对象被销毁
+- 这就是为什么 Fragment 中观察 LiveData 要用 `getViewLifecycleOwner()` 而不是 `this`
 
-```kotlin
-class ProfileFragment : Fragment(R.layout.fragment_profile) {
-    private val viewModel: ProfileViewModel by viewModels()
+**Fragment 事务：**
 
-    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        super.onViewCreated(view, savedInstanceState)
-        val binding = FragmentProfileBinding.bind(view)
+```java
+FragmentManager fragmentManager = getSupportFragmentManager();
+FragmentTransaction transaction = fragmentManager.beginTransaction();
 
-        viewLifecycleOwner.lifecycleScope.launch {
-            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                viewModel.profile.collect { profile ->
-                    binding.nameText.text = profile.name
-                }
-            }
-        }
+transaction.replace(R.id.container, new ProfileFragment());
+transaction.addToBackStack("profile");  // 加入返回栈，按返回键可以回来
+transaction.setReorderingAllowed(true); // 优化事务执行顺序
+transaction.commit();                   // 提交（异步）
+// transaction.commitAllowingStateLoss(); // 允许状态丢失（不推荐）
+```
+
+#### 关键 API
+
+| API | 用途 | 说明 |
+|-----|------|------|
+| `Fragment(requireContext())` | 构造函数 | 传入布局 ID |
+| `onCreateView()` | 创建视图 | 返回 Fragment 的根视图 |
+| `onViewCreated()` | 视图创建完成 | 在这里初始化 View 和绑定数据 |
+| `getViewLifecycleOwner()` | 视图生命周期 | 观察 LiveData 时用这个 |
+| `requireContext()` | 获取 Context | 非 null 版本的 getContext() |
+| `requireActivity()` | 获取宿主 Activity | 非 null 版本的 getActivity() |
+| `requireArguments()` | 获取参数 | 非 null 版本的 getArguments() |
+| `setArguments(bundle)` | 设置参数 | 在创建时传入 |
+| `setResult(result)` | 设置返回结果 | Fragment Result API |
+| `getParentFragmentManager()` | 获取父 FragmentManager | 嵌套 Fragment 时用 |
+| `setReorderingAllowed(true)` | 优化事务 | 推荐开启 |
+
+#### 代码示例
+
+**基础用法：**
+
+```java
+public class ProfileFragment extends Fragment {
+
+    private FragmentProfileBinding binding;
+    private ProfileViewModel viewModel;
+
+    // 推荐用工厂方法创建 Fragment 并传参
+    public static ProfileFragment newInstance(String userId) {
+        ProfileFragment fragment = new ProfileFragment();
+        Bundle args = new Bundle();
+        args.putString("user_id", userId);
+        fragment.setArguments(args);
+        return fragment;
+    }
+
+    @Override
+    public void onCreate(@Nullable Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        // 获取参数
+        String userId = requireArguments().getString("user_id");
+        // 创建 ViewModel（注意：这里不能用 getViewLifecycleOwner，因为视图还没创建）
+        viewModel = new ViewModelProvider(this).get(ProfileViewModel.class);
+        viewModel.setUserId(userId);
+    }
+
+    @Nullable
+    @Override
+    public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container,
+                             @Nullable Bundle savedInstanceState) {
+        binding = FragmentProfileBinding.inflate(inflater, container, false);
+        return binding.getRoot();
+    }
+
+    @Override
+    public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
+        super.onViewCreated(view, savedInstanceState);
+
+        // 观察 LiveData（必须用 getViewLifecycleOwner()）
+        viewModel.getUser().observe(getViewLifecycleOwner(), user -> {
+            binding.nameText.setText(user.getName());
+            binding.emailText.setText(user.getEmail());
+        });
+
+        viewModel.getIsLoading().observe(getViewLifecycleOwner(), loading -> {
+            binding.progressBar.setVisibility(loading ? View.VISIBLE : View.GONE);
+        });
+
+        binding.editButton.setOnClickListener(v -> {
+            // 导航到编辑页
+            Navigation.findNavController(v).navigate(
+                R.id.action_profile_to_edit
+            );
+        });
+    }
+
+    @Override
+    public void onDestroyView() {
+        super.onDestroyView();
+        binding = null;
+    }
+}
+```
+
+**Fragment 间通信（Fragment Result API）：**
+
+```java
+// 发送结果的 Fragment
+public class InputFragment extends Fragment {
+
+    private void sendResult(String inputValue) {
+        Bundle result = new Bundle();
+        result.putString("input_value", inputValue);
+        // 用 setFragmentResult 发送，key 是请求 key
+        getParentFragmentManager().setFragmentResult("request_key", result);
+        // Navigation.findNavController(requireView()).popBackStack(); // 返回上一页
     }
 }
 
-// Activity 中切换 Fragment
-supportFragmentManager.commit {
-    setReorderingAllowed(true)
-    replace<R.id.container>(ProfileFragment::class.java, args = bundleOf("id" to "123"))
-    addToBackStack("profile")
+// 接收结果的 Fragment（或 Activity）
+public class ResultFragment extends Fragment {
+
+    @Override
+    public void onCreate(@Nullable Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        // 注册结果监听
+        getParentFragmentManager().setFragmentResultListener(
+            "request_key",
+            this,
+            (requestKey, result) -> {
+                String value = result.getString("input_value");
+                // 处理结果
+                binding.resultText.setText(value);
+            }
+        );
+    }
 }
 ```
 
-**注意事项：**
-- Fragment 里观察 LiveData/Flow 必须用 `viewLifecycleOwner`，别用 `this`（this 的生命周期比视图长）
+**嵌套 Fragment（子 Fragment）：**
+
+```java
+// 父 Fragment 的布局中包含一个 FrameLayout 作为子 Fragment 容器
+public class ParentFragment extends Fragment {
+
+    @Override
+    public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
+        super.onViewCreated(view, savedInstanceState);
+
+        // 用 getChildFragmentManager() 管理子 Fragment
+        getChildFragmentManager().beginTransaction()
+            .replace(R.id.child_container, new ChildFragment())
+            .commit();
+    }
+}
+```
+
+#### 最佳实践
+
+- Fragment 里观察 LiveData/Flow **必须**用 `getViewLifecycleOwner()`，别用 `this`。因为 Fragment 的生命周期比视图长（replace 时视图销毁但 Fragment 还在），用 `this` 会导致重复观察或崩溃
+- 传参用 `newInstance()` 工厂方法 + `Bundle`，别用构造函数传参（系统重建 Fragment 时会用无参构造函数）
 - `setReorderingAllowed(true)` 可以优化事务执行顺序，推荐开启
-- Fragment 间通信用共享 ViewModel 或 Result API，别直接互相引用
+- Fragment 间通信用**共享 ViewModel** 或 **Fragment Result API**，别直接互相引用
+- 嵌套 Fragment 用 `getChildFragmentManager()`，别用 `getParentFragmentManager()`
+
+#### 常见问题
+
+| 问题 | 原因 | 解决方案 |
+|------|------|---------|
+| LiveData 收到多次回调 | 用了 this 而不是 getViewLifecycleOwner() | 改用 getViewLifecycleOwner() |
+| 参数丢失 | 用了构造函数传参 | 用 newInstance() + Bundle |
+| 嵌套 Fragment 返回栈混乱 | 用了错误的 FragmentManager | 子 Fragment 用 getChildFragmentManager() |
+| IllegalStateException: Fragment already added | 重复添加同一个 Fragment | 检查是否已添加，或用 replace |
 
 ---
 
-### 13. RecyclerView
+### 10. RecyclerView（ListAdapter + DiffUtil）
 
-**一句话定位：** 高效列表控件，通过复用 Item View 来显示大量数据。
+#### 一句话定位
 
-**核心原理：**
+高效列表控件，通过复用 Item View 来显示大量数据，配合 DiffUtil 只更新变化的项。
+
+#### 解决了什么问题
+
+`ListView` 每次滚动都创建新 View，数据多了就卡。RecyclerView 通过 ViewHolder 模式复用已滚出屏幕的 View，性能好很多。而且 `DiffUtil` 可以自动计算列表差异，只更新变化的 Item，带平滑动画。
+
+#### 适用场景
+
+- 任何需要显示列表数据的场景（用户列表、商品列表、消息列表等）
+- 需要不同布局（线性、网格、瀑布流）
+- 需要列表项动画（增删改的过渡动画）
+- 大量数据展示（配合 Paging 分页加载）
+
+#### 核心原理
 
 打个比方：RecyclerView 就像自助餐厅。它只有固定数量的盘子（ViewHolder），吃完的盘子收回来洗干净给下一个人用（复用），而不是每个人发一个新盘子。这样不管来多少人，盘子数量始终可控。
 
 技术层面：
-- **ViewHolder 模式**：每个 Item 对应一个 ViewHolder，滚出屏幕的 ViewHolder 被回收复用
-- **LayoutManager**：决定怎么排列（线性、网格、瀑布流）
-- **DiffUtil**：用 Myers 差分算法计算新旧列表差异，只更新变化的 Item
-- **ListAdapter**：内置 DiffUtil 的适配器，调用 `submitList()` 自动计算差异并更新
 
-**代码示例：**
+- **ViewHolder 模式**：每个 Item 对应一个 ViewHolder，滚出屏幕的 ViewHolder 被回收放入 Pool，新 Item 进入时从 Pool 中取出复用
+- **LayoutManager**：决定怎么排列 Item
+  - `LinearLayoutManager`：线性列表（水平/垂直）
+  - `GridLayoutManager`：网格布局
+  - `StaggeredGridLayoutManager`：瀑布流
+- **ItemDecoration**：添加分隔线、边距
+- **ItemAnimator**：控制增删改的动画（默认有 `DefaultItemAnimator`）
+- **DiffUtil**：用 Eugene W. Myers 差分算法计算新旧列表差异，时间复杂度 O(N)，只更新变化的 Item
+- **ListAdapter**：内置 `AsyncListDiffer` 的适配器，调用 `submitList()` 自动在后台线程计算差异并更新
 
-```kotlin
-// 1. 定义 Adapter
-class UserAdapter(
-    private val onItemClick: (User) -> Unit
-) : ListAdapter<User, UserViewHolder>(UserDiffCallback()) {
+**RecyclerView 的回收复用流程：**
 
-    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): UserViewHolder {
-        val binding = ItemUserBinding.inflate(
-            LayoutInflater.from(parent.context), parent, false
-        )
-        return UserViewHolder(binding, onItemClick)
-    }
-
-    override fun onBindViewHolder(holder: UserViewHolder, position: Int) {
-        holder.bind(getItem(position))
-    }
-}
-
-// 2. DiffUtil 回调
-class UserDiffCallback : DiffUtil.ItemCallback<User>() {
-    override fun areItemsTheSame(old: User, new: User) = old.id == new.id
-    override fun areContentsTheSame(old: User, new: User) = old == new
-}
-
-// 3. ViewHolder
-class UserViewHolder(
-    private val binding: ItemUserBinding,
-    private val onItemClick: (User) -> Unit
-) : RecyclerView.ViewHolder(binding.root) {
-    fun bind(user: User) {
-        binding.nameText.text = user.name
-        binding.root.setOnClickListener { onItemClick(user) }
-    }
-}
-
-// 4. 使用
-val adapter = UserAdapter { user -> showDetail(user) }
-recyclerView.adapter = adapter
-recyclerView.layoutManager = LinearLayoutManager(context)
-adapter.submitList(userList)
+```
+Item 滚出屏幕
+  → RecyclerView 回收 ViewHolder，放入 Scrap（临时缓存）或 Cache（一级缓存）
+  → 新 Item 进入屏幕
+  → 先从 Scrap 找（同一帧内的复用）
+  → 再从 Cache 找（刚滚出去的，带完整状态）
+  → 再从 ViewCacheExtension 找（自定义缓存）
+  → 再从 RecycledViewPool 找（按 viewType 找，需要重新绑定数据）
+  → 都没有才创建新的 ViewHolder
 ```
 
-**注意事项：**
-- 别用 `notifyDataSetChanged()`，会全量刷新没有动画；用 `ListAdapter.submitList()`
-- `submitList` 传同一个列表对象不会触发更新，需要传新对象
-- Compose 项目用 `LazyColumn` 替代 RecyclerView
+#### 关键 API
+
+| API | 用途 | 说明 |
+|-----|------|------|
+| `RecyclerView` | 核心控件 | 列表容器 |
+| `RecyclerView.ViewHolder` | 视图持有者 | 持有一个 Item 的视图 |
+| `RecyclerView.Adapter<VH>` | 适配器基类 | 管理 ViewHolder 的创建和绑定 |
+| `ListAdapter<T, VH>` | 内置 DiffUtil 的适配器 | 推荐，自动计算差异 |
+| `DiffUtil.ItemCallback<T>` | 差异计算回调 | 定义"什么是同一个 Item"和"内容是否变化" |
+| `AsyncListDiffer` | 异步差异计算器 | 自定义 Adapter 时使用 |
+| `LinearLayoutManager` | 线性布局 | 最常用的布局管理器 |
+| `GridLayoutManager` | 网格布局 | 可设置列数 |
+| `ItemDecoration` | 分隔线 | 添加 Item 之间的间距或分隔线 |
+| `submitList(list)` | 提交新数据 | ListAdapter 的方法，自动计算差异 |
+
+#### 代码示例
+
+**完整用法（ListAdapter + ViewBinding）：**
+
+```java
+// 1. 定义数据类
+public class User {
+    private final String id;
+    private final String name;
+    private final String email;
+    private final int avatarRes;
+
+    public User(String id, String name, String email, int avatarRes) {
+        this.id = id;
+        this.name = name;
+        this.email = email;
+        this.avatarRes = avatarRes;
+    }
+
+    public String getId() { return id; }
+    public String getName() { return name; }
+    public String getEmail() { return email; }
+    public int getAvatarRes() { return avatarRes; }
+}
+
+// 2. 定义 DiffUtil 回调
+public class UserDiffCallback extends DiffUtil.ItemCallback<User> {
+
+    @Override
+    public boolean areItemsTheSame(@NonNull User oldItem, @NonNull User newItem) {
+        // 判断是否是同一个 Item（通常用唯一标识）
+        return oldItem.getId().equals(newItem.getId());
+    }
+
+    @Override
+    public boolean areContentsTheSame(@NonNull User oldItem, @NonNull User newItem) {
+        // 判断内容是否变化（通常用 equals）
+        return oldItem.equals(newItem);
+    }
+
+    // 可选：定义部分更新（只更新变化的字段）
+    @Nullable
+    @Override
+    public Object getChangePayload(@NonNull User oldItem, @NonNull User newItem) {
+        Bundle diff = new Bundle();
+        if (!oldItem.getName().equals(newItem.getName())) {
+            diff.putString("name", newItem.getName());
+        }
+        if (!oldItem.getEmail().equals(newItem.getEmail())) {
+            diff.putString("email", newItem.getEmail());
+        }
+        return diff.isEmpty() ? null : diff;
+    }
+}
+
+// 3. 定义 Adapter
+public class UserAdapter extends ListAdapter<User, UserAdapter.ViewHolder> {
+
+    private final OnItemClickListener listener;
+
+    public UserAdapter(OnItemClickListener listener) {
+        super(new UserDiffCallback());
+        this.listener = listener;
+    }
+
+    @NonNull
+    @Override
+    public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+        ItemUserBinding binding = ItemUserBinding.inflate(
+            LayoutInflater.from(parent.getContext()), parent, false);
+        return new ViewHolder(binding);
+    }
+
+    @Override
+    public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
+        holder.bind(getItem(position));
+    }
+
+    @Override
+    public void onBindViewHolder(@NonNull ViewHolder holder, int position,
+                                @NonNull List<Object> payloads) {
+        // 部分更新：payloads 不为空时只更新变化的字段
+        if (payloads.isEmpty()) {
+            onBindViewHolder(holder, position);
+        } else {
+            Bundle diff = (Bundle) payloads.get(0);
+            if (diff.containsKey("name")) {
+                holder.binding.nameText.setText(diff.getString("name"));
+            }
+            if (diff.containsKey("email")) {
+                holder.binding.emailText.setText(diff.getString("email"));
+            }
+        }
+    }
+
+    // 点击事件接口
+    public interface OnItemClickListener {
+        void onItemClick(User user);
+        void onLongClick(User user);
+    }
+
+    class ViewHolder extends RecyclerView.ViewHolder {
+
+        private final ItemUserBinding binding;
+
+        ViewHolder(ItemUserBinding binding) {
+            super(binding.getRoot());
+            this.binding = binding;
+        }
+
+        void bind(User user) {
+            binding.nameText.setText(user.getName());
+            binding.emailText.setText(user.getEmail());
+            binding.avatarImageView.setImageResource(user.getAvatarRes());
+
+            binding.getRoot().setOnClickListener(v -> listener.onItemClick(user));
+            binding.getRoot().setOnLongClickListener(v -> {
+                listener.onLongClick(user);
+                return true;
+            });
+        }
+    }
+}
+
+// 4. 在 Activity/Fragment 中使用
+public class UserListFragment extends Fragment {
+
+    private FragmentUserListBinding binding;
+    private UserAdapter adapter;
+
+    @Override
+    public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
+        super.onViewCreated(view, savedInstanceState);
+        binding = FragmentUserListBinding.bind(view);
+
+        // 创建 Adapter
+        adapter = new UserAdapter(new UserAdapter.OnItemClickListener() {
+            @Override
+            public void onItemClick(User user) {
+                // 跳转到详情
+                Bundle args = new Bundle();
+                args.putString("user_id", user.getId());
+                Navigation.findNavController(requireView()).navigate(
+                    R.id.action_list_to_detail, args);
+            }
+
+            @Override
+            public void onLongClick(User user) {
+                // 长按操作（删除、编辑等）
+                new AlertDialog.Builder(requireContext())
+                    .setTitle("操作")
+                    .setItems(new String[]{"编辑", "删除"}, (dialog, which) -> {
+                        if (which == 0) { /* 编辑 */ }
+                        else { /* 删除 */ }
+                    })
+                    .show();
+            }
+        });
+
+        // 配置 RecyclerView
+        binding.recyclerView.setLayoutManager(new LinearLayoutManager(requireContext()));
+        binding.recyclerView.setAdapter(adapter);
+
+        // 添加分隔线
+        binding.recyclerView.addItemDecoration(
+            new DividerItemDecoration(requireContext(), DividerItemDecoration.VERTICAL));
+
+        // 提交数据（自动计算差异并更新）
+        adapter.submitList(userList);
+
+        // 观察数据变化
+        viewModel.getUsers().observe(getViewLifecycleOwner(), users -> {
+            adapter.submitList(users);
+        });
+    }
+}
+```
+
+**多类型 Item（不同布局）：**
+
+```java
+public class MessageAdapter extends ListAdapter<MessageItem, RecyclerView.ViewHolder> {
+
+    private static final int TYPE_TEXT = 0;
+    private static final int TYPE_IMAGE = 1;
+    private static final int TYPE_DATE = 2;
+
+    @Override
+    public int getItemViewType(int position) {
+        MessageItem item = getItem(position);
+        if (item instanceof TextMessage) return TYPE_TEXT;
+        if (item instanceof ImageMessage) return TYPE_IMAGE;
+        if (item instanceof DateDivider) return TYPE_DATE;
+        return TYPE_TEXT;
+    }
+
+    @NonNull
+    @Override
+    public RecyclerView.ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+        switch (viewType) {
+            case TYPE_IMAGE:
+                return new ImageViewHolder(ItemMessageImageBinding.inflate(
+                    LayoutInflater.from(parent.getContext()), parent, false));
+            case TYPE_DATE:
+                return new DateViewHolder(ItemDateDividerBinding.inflate(
+                    LayoutInflater.from(parent.getContext()), parent, false));
+            default:
+                return new TextViewHolder(ItemMessageTextBinding.inflate(
+                    LayoutInflater.from(parent.getContext()), parent, false));
+        }
+    }
+
+    @Override
+    public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int position) {
+        MessageItem item = getItem(position);
+        if (holder instanceof TextViewHolder) {
+            ((TextViewHolder) holder).bind((TextMessage) item);
+        } else if (holder instanceof ImageViewHolder) {
+            ((ImageViewHolder) holder).bind((ImageMessage) item);
+        } else if (holder instanceof DateViewHolder) {
+            ((DateViewHolder) holder).bind((DateDivider) item);
+        }
+    }
+}
+```
+
+**自定义 ItemDecoration（分隔线）：**
+
+```java
+public class SpacingItemDecoration extends RecyclerView.ItemDecoration {
+
+    private final int verticalSpacing;
+    private final int horizontalSpacing;
+
+    public SpacingItemDecoration(int verticalSpacing, int horizontalSpacing) {
+        this.verticalSpacing = verticalSpacing;
+        this.horizontalSpacing = horizontalSpacing;
+    }
+
+    @Override
+    public void getItemOffsets(@NonNull Rect outRect, @NonNull View view,
+                               @NonNull RecyclerView parent,
+                               @NonNull RecyclerView.State state) {
+        int position = parent.getChildAdapterPosition(view);
+        int itemCount = state.getItemCount();
+
+        // 最后一项不加底部间距
+        outRect.bottom = (position == itemCount - 1) ? 0 : verticalSpacing;
+        outRect.left = horizontalSpacing;
+        outRect.right = horizontalSpacing;
+        outRect.top = verticalSpacing;
+    }
+}
+
+// 使用
+recyclerView.addItemDecoration(new SpacingItemDecoration(
+    getResources().getDimensionPixelSize(R.dimen.spacing_8dp),
+    getResources().getDimensionPixelSize(R.dimen.spacing_16dp)
+));
+```
+
+#### 最佳实践
+
+- **永远用 `ListAdapter` + `submitList()`**，别用 `notifyDataSetChanged()`（全量刷新，没有动画，性能差）
+- `submitList()` 传入的列表必须是**新的对象**，传同一个对象不会触发更新（内部用 `==` 判断）
+- `areItemsTheSame` 用唯一标识（ID），`areContentsTheSame` 用 `equals()`
+- 列表项用 `holder.itemView.setTag()` 或 `RecyclerView.ViewHolder.getItemId()` 帮助定位
+- 大量数据配合 Paging 使用，别一次性加载全部
+- `RecyclerView.setHasFixedSize(true)` 在 Item 尺寸固定时开启，可以跳过 `requestLayout` 提升性能
+
+#### 常见问题
+
+| 问题 | 原因 | 解决方案 |
+|------|------|---------|
+| 数据没更新 | submitList 传了同一个对象 | 创建新列表对象 |
+| 动画不流畅 | DiffUtil 计算慢 | 确保 areItemsTheSame 正确 |
+| Item 闪烁 | onBindViewHolder 中做了耗时操作 | 确保绑定操作快速 |
+| 嵌套滚动冲突 | RecyclerView 在 ScrollView 中 | 用 NestedScrollView 或设置 isNestedScrollingEnabled |
 
 ---
 
-## 三、基础类 (Foundation)
+## 三、基础类（Foundation）
 
-### 14. WorkManager
+---
 
-**一句话定位：** 后台任务的"保险箱"，就算 App 被杀了、手机重启了，任务照样执行。
+### 11. WorkManager
 
-**解决了什么问题：**
-后台任务（上传日志、同步数据）需要可靠执行，但 Android 的后台限制越来越严（Doze 模式、后台执行限制）。WorkManager 帮你选最合适的执行方式（JobScheduler / AlarmManager），保证任务一定能跑完。
+#### 一句话定位
 
-**核心原理：**
+后台任务的"保险箱"，就算 App 被杀了、手机重启了，任务照样执行。
+
+#### 解决了什么问题
+
+后台任务（上传日志、同步数据、定期清理缓存）需要可靠执行，但 Android 的后台限制越来越严：
+- Android 6.0+ 的 Doze 模式会限制后台网络和 CPU
+- Android 8.0+ 的后台执行限制禁止隐式广播
+- Android 12+ 的前台服务启动限制更严了
+
+WorkManager 帮你选最合适的执行方式（API 23+ 用 JobScheduler，低版本用 AlarmManager + BroadcastReceiver），保证任务一定能跑完。
+
+#### 适用场景
+
+- **必须执行的后台任务**（上传数据、同步、发送日志）
+- **不需要立即执行的任务**（可以延迟几分钟甚至几小时）
+- **需要条件触发**（有 WiFi 时上传、充电时同步）
+- **周期性任务**（每天凌晨清理缓存、每小时同步一次）
+- **任务链**（先压缩再上传，上传成功再通知）
+
+**不适合的场景：**
+- 需要立即执行的任务 → 用 Foreground Service
+- 精确定时的任务 → 用 AlarmManager
+- 短时间内的后台任务 → 用 Coroutine 或 Executor
+
+#### 核心原理
 
 打个比方：WorkManager 就像一个靠谱的快递公司。你把包裹（任务）交给它，它会在合适的时间送达。就算路上遇到暴风雨（App 被杀、手机重启），它也会在条件恢复后继续送。你还可以设定条件——"等有 WiFi 再送"（Constraints）。
 
 技术层面：
-- 内部用 SQLite 数据库持久化任务，设备重启后自动恢复
-- API 23+ 用 `JobScheduler`，低版本用 `AlarmManager + BroadcastReceiver`
-- 支持约束条件：网络类型、充电状态、电量、存储空间
-- 支持重试策略（指数退避）、任务链（顺序/并行组合）
-- 加急工作（Expedited Work）可以立即执行（类似 Foreground Service）
 
-**代码示例：**
+- 内部用**自带的 SQLite 数据库**持久化所有任务（WorkInfo），设备重启后自动恢复未完成的任务
+- API 23+ 用 `JobScheduler`，低版本用 `AlarmManager + BroadcastReceiver`，自动选择最优方案
+- 支持约束条件（Constraints）：网络类型、充电状态、电量低、存储空间
+- 支持重试策略：指数退避（Exponential Backoff），可配置最大重试次数
+- 支持任务链（WorkChain）：顺序执行、并行执行、合并执行
+- 加急工作（Expedited Work）：可以立即执行，类似 Foreground Service（API 12+）
+- 任务状态机：`ENQUEUED → RUNNING → SUCCEEDED / FAILED / RETRYING / CANCELLED / BLOCKED`
 
-```kotlin
+**WorkManager 任务状态流转：**
+
+```
+ENQUEUED（已入队，等待条件满足）
+  ↓
+RUNNING（正在执行）
+  ↓
+SUCCEEDED（成功） / FAILED（失败） / RETRYING（重试中）
+  ↓
+CANCELLED（被取消）
+```
+
+#### 关键 API
+
+| API | 用途 | 说明 |
+|-----|------|------|
+| `Worker` | 任务基类 | 同步执行，doWork() 在后台线程 |
+| `CoroutineWorker` | 协程任务 | Kotlin 用（Java 用 ListenableWorker） |
+| `RxWorker` | RxJava 任务 | Java 推荐，支持 RxJava |
+| `OneTimeWorkRequest` | 一次性任务 | 执行一次就结束 |
+| `PeriodicWorkRequest` | 周期性任务 | 最小间隔 15 分钟 |
+| `WorkRequest.Builder` | 构建器 | 设置约束、标签、初始延迟等 |
+| `Constraints` | 约束条件 | 网络、充电、电量等 |
+| `WorkManager.enqueue()` | 调度任务 | 提交任务到队列 |
+| `WorkManager.beginWith().then()` | 任务链 | 顺序/并行组合 |
+| `WorkManager.getWorkInfoById()` | 查询状态 | 返回 LiveData |
+| `WorkManager.cancelWorkById()` | 取消任务 | 按任务 ID 取消 |
+| `setExpedited()` | 加急执行 | 立即执行（API 12+） |
+| `setBackoffCriteria()` | 重试策略 | 指数退避配置 |
+| `setInputData()` / `getInputData()` | 传递数据 | 任务间传参 |
+
+#### Gradle 依赖
+
+```groovy
+dependencies {
+    implementation "androidx.work:work-runtime:2.10.0"
+    // RxJava 支持（Java 推荐）
+    implementation "androidx.work:work-rxjava3:2.10.0"
+}
+```
+
+#### 代码示例
+
+**基础用法（一次性任务）：**
+
+```java
 // 1. 定义 Worker
-class UploadWorker(
-    context: Context,
-    params: WorkerParameters
-) : CoroutineWorker(context, params) {
-    override suspend fun doWork(): Result {
-        return try {
-            uploadData()
-            Result.success()
-        } catch (e: Exception) {
-            if (runAttemptCount < 3) Result.retry() else Result.failure()
+public class UploadWorker extends Worker {
+
+    public UploadWorker(@NonNull Context context, @NonNull WorkerParameters params) {
+        super(context, params);
+    }
+
+    @NonNull
+    @Override
+    public Result doWork() {
+        // doWork() 已经在后台线程执行了
+        try {
+            String filePath = getInputData().getString("file_path");
+            File file = new File(filePath);
+
+            // 模拟上传
+            boolean success = uploadFile(file);
+
+            if (success) {
+                return Result.success();  // 成功
+            } else {
+                return Result.failure();  // 失败
+            }
+        } catch (Exception e) {
+            // 返回 retry 会触发重试（按 BackoffCriteria 配置的策略）
+            if (getRunAttemptCount() < 3) {
+                return Result.retry();
+            }
+            return Result.failure();
         }
+    }
+
+    private boolean uploadFile(File file) {
+        // 实际上传逻辑
+        return true;
     }
 }
 
 // 2. 构建并调度
-val uploadWork = OneTimeWorkRequestBuilder<UploadWorker>()
-    .setConstraints(
-        Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .setRequiresBatteryNotLow(true)
-            .build()
-    )
-    .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.MINUTES)
-    .addTag("upload")
-    .build()
+public class UploadHelper {
 
-WorkManager.getInstance(context).enqueue(uploadWork)
+    public static void scheduleUpload(Context context, String filePath) {
+        // 传递数据给 Worker
+        Data inputData = new Data.Builder()
+            .putString("file_path", filePath)
+            .build();
 
-// 3. 观察状态
-WorkManager.getInstance(context).getWorkInfoByIdLiveData(uploadWork.id)
-    .observe(this) { workInfo ->
-        when (workInfo.state) {
-            WorkInfo.State.SUCCEEDED -> showToast("上传成功")
-            WorkInfo.State.FAILED -> showToast("上传失败")
-            else -> {}
-        }
-    }
+        // 设置约束条件
+        Constraints constraints = new Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)  // 需要网络
+            .setRequiresBatteryNotLow(true)                 // 电量不低
+            .build();
 
-// 4. 链式调用（先压缩再上传）
-WorkManager.getInstance(context)
-    .beginWith(compressWork)
-    .then(uploadWork)
-    .enqueue()
-```
+        // 构建任务请求
+        OneTimeWorkRequest uploadWork = new OneTimeWorkRequest.Builder(UploadWorker.class)
+            .setInputData(inputData)
+            .setConstraints(constraints)
+            .setBackoffCriteria(                          // 重试策略
+                BackoffPolicy.EXPONENTIAL,                // 指数退避
+                10, TimeUnit.MINUTES,                     // 初始延迟 10 分钟
+                30, TimeUnit.MINUTES                      // 最大延迟 30 分钟
+            )
+            .addTag("upload")                             // 标签，方便查询和取消
+            .setInitialDelay(5, TimeUnit.SECONDS)         // 初始延迟 5 秒
+            .build();
 
-**注意事项：**
-- 不需要保证立即执行的任务用 WorkManager，需要立即执行的用 Foreground Service
-- 周期任务最小间隔 15 分钟（系统限制）
-- `CoroutineWorker` 里不要做超过 10 分钟的操作，会被系统杀掉
-
----
-
-### 15. App Startup
-
-**一句话定位：** 统一管理 App 启动时的初始化，替代每个库各自用 ContentProvider 的做法。
-
-**核心原理：**
-
-打个比方：以前每个库（WorkManager、Firebase 等）启动时都自己开一扇门（ContentProvider）进你的 App，门多了启动就慢。App Startup 把所有门合成一扇——一个 ContentProvider 统一按顺序初始化所有库。
-
-技术层面：
-- 每个库实现 `Initializer<T>` 接口，声明 `create()` 和 `dependencies()`
-- App Startup 在 `Application.onCreate()` 之前通过 `InitializationProvider` 执行
-- 按依赖关系拓扑排序，依次初始化
-- 也可以禁用自动初始化，手动调用 `AppInitializer.getInstance().initializeComponent()`
-
-**代码示例：**
-
-```kotlin
-// 1. 定义初始化器
-class WorkManagerInitializer : Initializer<WorkManager> {
-    override fun create(context: Context): WorkManager {
-        val config = Configuration.Builder()
-            .setMinimumLoggingLevel(Log.DEBUG)
-            .build()
-        WorkManager.initialize(context, config)
-        return WorkManager.getInstance(context)
-    }
-
-    // 声明依赖（在 LoggerInitializer 之后初始化）
-    override fun dependencies(): List<Class<out Initializer<*>>> {
-        return listOf(LoggerInitializer::class.java)
+        // 提交任务
+        WorkManager.getInstance(context).enqueue(uploadWork);
     }
 }
 
-// 2. 在 AndroidManifest.xml 中注册
+// 3. 观察任务状态
+public class UploadActivity extends AppCompatActivity {
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+
+        OneTimeWorkRequest uploadWork = UploadHelper.buildUploadWork("/path/to/file");
+
+        // 用 LiveData 观察状态
+        WorkManager.getInstance(this).getWorkInfoByIdLiveData(uploadWork.getId())
+            .observe(this, workInfo -> {
+                if (workInfo == null) return;
+
+                switch (workInfo.getState()) {
+                    case ENQUEUED:
+                        showToast("任务已入队，等待执行");
+                        break;
+                    case RUNNING:
+                        showToast("正在上传...");
+                        progressBar.setVisibility(View.VISIBLE);
+                        break;
+                    case SUCCEEDED:
+                        showToast("上传成功");
+                        progressBar.setVisibility(View.GONE);
+                        break;
+                    case FAILED:
+                        showToast("上传失败");
+                        progressBar.setVisibility(View.GONE);
+                        break;
+                    case RETRYING:
+                        showToast("上传失败，正在重试...");
+                        break;
+                    case CANCELLED:
+                        showToast("任务已取消");
+                        break;
+                }
+            });
+
+        WorkManager.getInstance(this).enqueue(uploadWork);
+    }
+}
+```
+
+**RxWorker（Java 推荐，支持异步操作）：**
+
+```java
+public class SyncWorker extends RxWorker {
+
+    public SyncWorker(@NonNull Context context, @NonNull WorkerParameters params) {
+        super(context, params);
+    }
+
+    @NonNull
+    @Override
+    public Single<Result> createWork() {
+        return apiService.syncData()
+            .map(response -> {
+                if (response.isSuccess()) {
+                    return Result.success(
+                        new Data.Builder()
+                            .putString("sync_count", String.valueOf(response.getCount()))
+                            .build()
+                    );
+                } else {
+                    return Result.retry();
+                }
+            })
+            .onErrorReturnItem(Result.failure());
+    }
+}
+```
+
+**任务链（顺序 + 并行）：**
+
+```java
+// 场景：先压缩图片，再上传，上传成功后发通知
+// 两个图片可以并行压缩，然后上传，最后发通知
+
+OneTimeWorkRequest compressA = new OneTimeWorkRequest.Builder(CompressWorker.class)
+    .setInputData(new Data.Builder().putString("file", "image_a.jpg").build())
+    .build();
+
+OneTimeWorkRequest compressB = new OneTimeWorkRequest.Builder(CompressWorker.class)
+    .setInputData(new Data.Builder().putString("file", "image_b.jpg").build())
+    .build();
+
+OneTimeWorkRequest upload = new OneTimeWorkRequest.Builder(UploadWorker.class)
+    .build();
+
+OneTimeWorkRequest notify = new OneTimeWorkRequest.Builder(NotifyWorker.class)
+    .build();
+
+// 并行压缩 → 顺序上传 → 发通知
+WorkManager.getInstance(context)
+    .beginWith(Arrays.asList(compressA, compressB))  // 并行执行
+    .then(upload)                                     // 顺序执行
+    .then(notify)                                     // 最后发通知
+    .enqueue();
+
+// 观察整个链的状态
+WorkManager.getInstance(context).getWorkInfoByIdLiveData(notify.getId())
+    .observe(this, workInfo -> {
+        if (workInfo != null && workInfo.getState() == WorkInfo.State.SUCCEEDED) {
+            showToast("全部完成！");
+        }
+    });
+```
+
+**周期性任务：**
+
+```java
+// 每天凌晨 3 点清理缓存（最小间隔 15 分钟，重复间隔 24 小时）
+PeriodicWorkRequest cleanupWork = new PeriodicWorkRequest.Builder(
+    CleanupWorker.class,
+    24, TimeUnit.HOURS,           // 重复间隔
+    1, TimeUnit.HOURS             // flex interval（在此窗口内执行）
+)
+    .setConstraints(new Constraints.Builder()
+        .setRequiresDeviceIdle(true)  // 设备空闲时执行
+        .build())
+    .build();
+
+WorkManager.getInstance(context)
+    .enqueueUniquePeriodicWork(
+        "daily_cleanup",                        // 唯一名称
+        ExistingPeriodicWorkPolicy.KEEP,        // 已存在则保留（不替换）
+        cleanupWork
+    );
+```
+
+**取消任务：**
+
+```java
+// 按标签取消所有任务
+WorkManager.getInstance(context).cancelAllWorkByTag("upload");
+
+// 按 ID 取消
+WorkManager.getInstance(context).cancelWorkById(workRequest.getId());
+
+// 按唯一名称取消
+WorkManager.getInstance(context).cancelUniqueWork("daily_cleanup");
+```
+
+#### 最佳实践
+
+- 不需要保证立即执行的任务用 WorkManager，需要立即执行的用 Foreground Service
+- 周期任务最小间隔 **15 分钟**（系统限制），别设更小
+- Worker 的 `doWork()` 不要做超过 **10 分钟**的操作，会被系统杀掉
+- 用 `enqueueUniqueWork()` + `ExistingWorkPolicy.REPLACE` 避免重复入队同一任务
+- 传大数据给 Worker 别用 `Data`（有 10KB 限制），存到数据库/文件里传 URI
+- RxWorker 是 Java 项目的最佳选择，天然支持异步操作
+
+#### 常见问题
+
+| 问题 | 原因 | 解决方案 |
+|------|------|---------|
+| 任务不执行 | 约束条件不满足 | 检查 Constraints 和设备状态 |
+| 任务重复执行 | 没用 enqueueUniqueWork | 用 enqueueUniqueWork + REPLACE |
+| 传大数据失败 | Data 有 10KB 限制 | 存文件/数据库，传 URI |
+| 任务被系统杀 | 执行时间太长 | 拆分任务或用 setForeground |
+
+---
+
+### 12. App Startup
+
+#### 一句话定位
+
+统一管理 App 启动时的初始化，替代每个库各自用 ContentProvider 的做法。
+
+#### 解决了什么问题
+
+以前每个第三方库（WorkManager、Firebase、LeakCanary 等）启动时都自己创建一个 ContentProvider 来初始化。App 启动时系统会按顺序创建所有 ContentProvider，每个都要花时间，库多了启动就慢。
+
+App Startup 把所有初始化合并到一个 ContentProvider 里，按依赖顺序执行，显著减少启动时间。
+
+#### 适用场景
+
+- App 启动时需要初始化多个第三方库
+- 想控制初始化顺序（A 必须在 B 之前初始化）
+- 想延迟某些库的初始化（懒加载）
+- 作为库的开发者，提供初始化入口
+
+#### 核心原理
+
+打个比方：以前每个库启动时都自己开一扇门（ContentProvider）进你的 App，门多了启动就慢。App Startup 把所有门合成一扇——一个 ContentProvider 统一按顺序初始化所有库。
+
+技术层面：
+
+- 每个库实现 `Initializer<T>` 接口，声明 `create(context)` 和 `dependencies()`
+- App Startup 在 `Application.onCreate()` **之前**通过 `InitializationProvider`（一个 ContentProvider）执行
+- 按依赖关系拓扑排序，依次初始化（没有依赖的先初始化）
+- 也可以禁用自动初始化，手动调用 `AppInitializer.getInstance().initializeComponent()`
+
+**初始化顺序示例：**
+
+```
+LoggerInitializer（无依赖）→ 先初始化
+  └── WorkManagerInitializer（依赖 Logger）→ 后初始化
+        └── AnalyticsInitializer（依赖 WorkManager）→ 最后初始化
+```
+
+#### 关键 API
+
+| API | 用途 | 说明 |
+|-----|------|------|
+| `Initializer<T>` | 初始化器接口 | 实现 create() 和 dependencies() |
+| `create(context)` | 执行初始化 | 返回初始化后的对象 |
+| `dependencies()` | 声明依赖 | 返回依赖的其他 Initializer 的 Class 列表 |
+| `AppInitializer` | 手动初始化入口 | 手动触发某个 Initializer |
+| `InitializationProvider` | 内置 ContentProvider | 自动发现并执行 Initializer |
+
+#### Gradle 依赖
+
+```groovy
+implementation "androidx.startup:startup-runtime:1.2.0"
+```
+
+#### 代码示例
+
+**定义初始化器：**
+
+```java
+// 1. 日志库初始化（无依赖，最先执行）
+public class LoggerInitializer implements Initializer<Logger> {
+
+    @NonNull
+    @Override
+    public Logger create(@NonNull Context context) {
+        Logger.init(context)
+            .setLogLevel(BuildConfig.DEBUG ? LogLevel.DEBUG : LogLevel.NONE)
+            .enableFileLogging(true);
+        return Logger.getInstance();
+    }
+
+    @NonNull
+    @Override
+    public List<Class<? extends Initializer<?>>> dependencies() {
+        return Collections.emptyList(); // 无依赖
+    }
+}
+
+// 2. WorkManager 初始化（依赖 Logger）
+public class WorkManagerInitializer implements Initializer<WorkManager> {
+
+    @NonNull
+    @Override
+    public WorkManager create(@NonNull Context context) {
+        Configuration config = new Configuration.Builder()
+            .setMinimumLoggingLevel(Log.DEBUG)
+            .build();
+        WorkManager.initialize(context, config);
+        return WorkManager.getInstance(context);
+    }
+
+    @NonNull
+    @Override
+    public List<Class<? extends Initializer<?>>> dependencies() {
+        return Collections.singletonList(LoggerInitializer.class); // 依赖 Logger
+    }
+}
+
+// 3. 分析库初始化（依赖 WorkManager）
+public class AnalyticsInitializer implements Initializer<AnalyticsService> {
+
+    @NonNull
+    @Override
+    public AnalyticsService create(@NonNull Context context) {
+        AnalyticsService service = new AnalyticsService(context);
+        service.start();
+        return service;
+    }
+
+    @NonNull
+    @Override
+    public List<Class<? extends Initializer<?>>> dependencies() {
+        return Collections.singletonList(WorkManagerInitializer.class); // 依赖 WorkManager
+    }
+}
+```
+
+**在 AndroidManifest.xml 中注册：**
+
+```xml
 <provider
     android:name="androidx.startup.InitializationProvider"
     android:authorities="${applicationId}.androidx-startup"
     android:exported="false"
     tools:node="merge">
+
+    <!-- 注册初始化器 -->
     <meta-data
-        android:name="com.example.WorkManagerInitializer"
+        android:name="com.example.app.LoggerInitializer"
         android:value="androidx.startup" />
+
+    <meta-data
+        android:name="com.example.app.WorkManagerInitializer"
+        android:value="androidx.startup" />
+
+    <meta-data
+        android:name="com.example.app.AnalyticsInitializer"
+        android:value="androidx.startup" />
+
 </provider>
 ```
 
-**注意事项：**
+**禁用自动初始化（延迟/手动初始化）：**
+
+```xml
+<!-- 禁用某个库的自动初始化 -->
+<provider
+    android:name="androidx.startup.InitializationProvider"
+    android:authorities="${applicationId}.androidx-startup"
+    android:exported="false"
+    tools:node="merge">
+
+    <!-- 用 tools:node="remove" 移除自动初始化 -->
+    <meta-data
+        android:name="com.example.app.AnalyticsInitializer"
+        android:value="androidx.startup"
+        tools:node="remove" />
+
+</provider>
+```
+
+```java
+// 手动初始化（在需要的时候）
+public class MainActivity extends AppCompatActivity {
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+
+        // 手动触发初始化
+        AppInitializer.getInstance(this)
+            .initializeComponent(AnalyticsInitializer.class);
+    }
+}
+```
+
+#### 最佳实践
+
 - 第三方库（如 WorkManager、Firebase）已经自带了 Startup 初始化器，不需要你手动写
-- 如果想延迟初始化某个库，可以在 Manifest 里用 `tools:node="remove"` 禁用自动初始化
+- 如果想延迟初始化某个库，用 `tools:node="remove"` 禁用自动初始化，在需要时手动调用
 - Startup 只解决"启动时初始化"的问题，懒加载还得自己处理
+- 初始化器不要做耗时操作，否则影响启动速度
+
+#### 常见问题
+
+| 问题 | 原因 | 解决方案 |
+|------|------|---------|
+| 初始化顺序不对 | dependencies() 没正确声明 | 检查依赖关系 |
+| 初始化器没执行 | Manifest 里没注册 | 添加 meta-data |
+| 想延迟初始化 | 自动初始化太早 | 用 tools:node="remove" 禁用 |
 
 ---
 
-### 16. SplashScreen
+### 13. SplashScreen
 
-**一句话定位：** 统一的启动画面 API，Android 12+ 是系统行为，低版本兼容库帮你搞定。
+#### 一句话定位
 
-**核心原理：**
+统一的启动画面 API，Android 12+ 是系统行为，低版本兼容库帮你搞定。
 
-Android 12 开始系统强制显示启动画面（带 App 图标和动画），你没法关掉只能自定义。`core-splashscreen` 兼容库把这个行为统一到 Android 6.0+。
+#### 解决了什么问题
+
+以前启动画面（Splash Screen）需要自己实现一个 Activity 或用第三方库，不同设备表现不一致。Android 12 开始系统强制显示启动画面（带 App 图标和动画），你没法关掉只能自定义。`core-splashscreen` 兼容库把这个行为统一到 Android 6.0+。
+
+#### 适用场景
+
+- 所有 App 都需要启动画面（Android 12+ 强制要求）
+- 需要自定义启动画面的图标、背景色、动画
+- 需要控制启动画面的显示时长（等数据加载完再关闭）
+- 需要自定义退出动画
+
+#### 核心原理
+
+Android 12 开始系统强制显示启动画面。`core-splashscreen` 兼容库把这个行为向后兼容到 Android 6.0+。
 
 启动画面分三个阶段：
-1. **进入动画**（系统控制）：冷启动时系统显示
-2. **等待阶段**（你控制）：App 在后台初始化，画面保持显示
-3. **退出动画**（你控制）：初始化完成，画面消失
 
-**代码示例：**
+1. **进入动画**（系统控制）：冷启动时系统显示，图标从中心放大到目标位置
+2. **等待阶段**（你控制）：App 在后台初始化，画面保持显示。你可以用 `setKeepOnScreenCondition` 控制何时关闭
+3. **退出动画**（你控制）：初始化完成，画面消失。你可以自定义退出动画（淡出、缩放等）
 
-```kotlin
-// 1. themes.xml 中定义主题（Android 12+ 自动生效）
+**时间线：**
+
+```
+系统启动 → 进入动画（系统控制）→ 等待阶段（你控制）→ 退出动画（你控制）→ 第一帧绘制
+```
+
+#### 关键 API
+
+| API | 用途 | 说明 |
+|-----|------|------|
+| `installSplashScreen()` | 安装启动画面 | 在 Activity 的 onCreate 中调用，super.onCreate() 之前 |
+| `setKeepOnScreenCondition()` | 控制显示时长 | 返回 true 继续显示，false 关闭 |
+| `setOnExitAnimationListener()` | 自定义退出动画 | 监听退出事件，自己控制动画 |
+| `SplashScreenView` | 启动画面视图 | 可以获取图标、背景等 View 做动画 |
+
+#### Gradle 依赖
+
+```groovy
+implementation "androidx.core:core-splashscreen:1.0.1"
+```
+
+#### 代码示例
+
+**基础用法：**
+
+```xml
+<!-- 1. res/values/themes.xml 中定义启动主题 -->
 <style name="Theme.App.Starting" parent="Theme.SplashScreen">
+    <!-- 启动画面背景色 -->
     <item name="windowSplashScreenBackground">@color/splash_background</item>
-    <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash_animation</item>
+    <!-- 启动画面中央图标 -->
+    <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash</item>
+    <!-- 图标背景色（圆形背景） -->
+    <item name="windowSplashScreenIconBackgroundColor">@color/splash_icon_bg</item>
+    <!-- 启动画面结束后切换到主主题 -->
     <item name="postSplashScreenTheme">@style/Theme.App</item>
 </style>
+```
 
-// 2. AndroidManifest.xml 中使用
+```xml
+<!-- 2. AndroidManifest.xml 中使用启动主题 -->
 <activity
     android:name=".MainActivity"
     android:theme="@style/Theme.App.Starting"
-    ... />
+    android:exported="true">
+    <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+    </intent-filter>
+</activity>
+```
 
+```java
 // 3. Activity 中控制
-override fun onCreate(savedInstanceState: Bundle?) {
-    val splashScreen = installSplashScreen()
+public class MainActivity extends AppCompatActivity {
 
-    // 方式一：等数据准备好再关闭
-    splashScreen.setKeepOnScreenCondition { !viewModel.isReady }
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        // 必须在 super.onCreate() 之前调用
+        SplashScreen splashScreen = installSplashScreen();
 
-    // 方式二：自定义退出动画
-    splashScreen.setOnExitAnimationListener { splashScreenView ->
-        val fadeOut = ObjectAnimator.ofFloat(splashScreenView, View.ALPHA, 1f, 0f)
-        fadeOut.duration = 300
-        fadeOut.doOnEnd { splashScreenView.remove() }
-        fadeOut.start()
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+        // 方式一：等数据准备好再关闭启动画面
+        splashScreen.setKeepOnScreenCondition(() -> !viewModel.isReady());
     }
-
-    super.onCreate(savedInstanceState)
 }
 ```
 
-**注意事项：**
-- `installSplashScreen()` 必须在 `super.onCreate()` 之前调用
-- 启动画面图标建议用 Vector Drawable，大小 240x240 dp
-- Android 12+ 的启动画面动画时长由系统控制，你只能自定义退出动画
+**自定义退出动画：**
 
----
+```java
+public class MainActivity extends AppCompatActivity {
 
-## 四、行为类 (Behavior)
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        SplashScreen splashScreen = installSplashScreen();
 
-### 17. Biometric
+        // 设置自定义退出动画
+        splashScreen.setOnExitAnimationListener(splashScreenView -> {
+            // 创建退出动画
+            ObjectAnimator fadeOut = ObjectAnimator.ofFloat(
+                splashScreenView, View.ALPHA, 1f, 0f);
+            fadeOut.setDuration(300);
+            fadeOut.setInterpolator(new AccelerateInterpolator());
 
-**一句话定位：** 一行代码弹出指纹/面部识别对话框，还能跟加密操作绑定。
-
-**核心原理：**
-
-Biometric 库封装了系统的 `BiometricPrompt`，不管底层是指纹、面部还是虹膜，API 都一样。还支持回退到设备凭据（PIN/密码/图案）。配合 Android Keystore，可以做到"验证了指纹才能解密密钥"。
-
-**代码示例：**
-
-```kotlin
-// 1. 检查设备是否支持
-val biometricManager = BiometricManager.from(context)
-when (biometricManager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)) {
-    BiometricManager.BIometricManager.BIOMETRIC_SUCCESS -> { /* 可以使用 */ }
-    BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE -> { /* 没有硬件 */ }
-    BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE -> { /* 硬件不可用 */ }
-}
-
-// 2. 弹出验证对话框
-val promptInfo = BiometricPrompt.PromptInfo.Builder()
-    .setTitle("验证身份")
-    .setSubtitle("请使用指纹或面部识别")
-    .setNegativeButtonText("取消")
-    .build()
-
-val biometricPrompt = BiometricPrompt(
-    this,                           // Activity 或 Fragment
-    ContextCompat.getMainExecutor(this),
-    object : BiometricPrompt.AuthenticationCallback() {
-        override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-            // 验证成功，可以执行敏感操作
-            unlockSensitiveData()
-        }
-        override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-            // 错误处理
-        }
-    }
-)
-biometricPrompt.authenticate(promptInfo)
-```
-
-**注意事项：**
-- `setNegativeButtonText` 和 `setAllowedAuthenticators(DEVICE_CREDENTIAL)` 不能同时用
-- 生物识别失败次数过多会被系统锁定，需要等冷却时间
-- 敏感数据用 Keystore + Biometric 绑定，别只靠生物识别做唯一防线
-
----
-
-### 18. CameraX
-
-**一句话定位：** 相机开发的一站式方案，几行代码搞定预览、拍照、录像。
-
-**核心原理：**
-
-CameraX 把相机功能拆成几个"用例"（Use Case），你需要什么就绑什么：
-- **Preview**：显示相机预览画面
-- **ImageCapture**：拍照
-- **ImageAnalysis**：分析图像（如二维码扫描、ML Kit）
-- **VideoCapture**：录像
-
-CameraX 内部处理了设备兼容性问题（不同厂商的相机 API 行为不一致），你不用关心。
-
-**代码示例：**
-
-```kotlin
-// 1. 获取相机提供者
-val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
-
-cameraProviderFuture.addListener({
-    val cameraProvider = cameraProviderFuture.get()
-
-    // 2. 创建用例
-    val preview = Preview.Builder().build().also {
-        it.surfaceProvider = previewView.surfaceProvider
-    }
-
-    val imageCapture = ImageCapture.Builder()
-        .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
-        .build()
-
-    // 3. 绑定到生命周期
-    cameraProvider.unbindAll()  // 先解绑旧的
-    cameraProvider.bindToLifecycle(
-        this,                      // 生命周期所有者
-        CameraSelector.DEFAULT_BACK_CAMERA,
-        preview,
-        imageCapture
-    )
-}, ContextCompat.getMainExecutor(context))
-
-// 4. 拍照
-imageCapture.takePicture(
-    ImageCapture.OutputFileOptions.Builder(photoFile).build(),
-    ContextCompat.getMainExecutor(context),
-    object : ImageCapture.OnImageSavedCallback {
-        override fun onImageSaved(output: ImageCapture.OutputFileResults) { /* 成功 */ }
-        override fun onError(exc: ImageCaptureException) { /* 失败 */ }
-    }
-)
-```
-
-**注意事项：**
-- `bindToLifecycle` 绑定生命周期，Activity 暂停时相机自动释放，恢复时自动打开
-- 同时绑定多个用例时，CameraX 自动协调分辨率和帧率
-- Compose 中用 `AndroidView { PreviewView(it) }` 嵌入预览
-
----
-
-### 19. Media3
-
-**一句话定位：** 音视频播放的"瑞士军刀"，一个库搞定播放、后台服务、通知栏控制。
-
-**核心原理：**
-
-Media3 把以前分散的 ExoPlayer、MediaSession、MediaCompat 合并成一个统一的库。核心是 `Player` 接口（定义播放能力），`ExoPlayer` 是默认实现。`MediaSession` 把播放状态广播给系统（锁屏控制、蓝牙控制），`MediaController` 远程控制播放。
-
-打个比方：`ExoPlayer` 是播放器本身，`MediaSession` 是遥控器信号发射器（告诉系统"我在放什么歌"），`MediaController` 是遥控器（别的 App 或系统 UI 通过它控制你）。
-
-**代码示例：**
-
-```kotlin
-// 1. 创建播放器
-val player = ExoPlayer.Builder(context).build()
-
-// 2. 设置数据源
-player.setMediaItem(MediaItem.fromUri("https://example.com/video.mp4"))
-// 或播放列表
-player.setMediaItems(listOf(
-    MediaItem.fromUri("https://example.com/song1.mp3"),
-    MediaItem.fromUri("https://example.com/song2.mp3")
-))
-player.prepare()
-player.playWhenReady = true
-
-// 3. 视频播放 UI
-PlayerView(context).apply { player = this@apply.player }
-
-// 4. 后台播放 + 通知栏控制
-class PlaybackService : MediaSessionService() {
-    private var mediaSession: MediaSession? = null
-
-    override fun onCreate() {
-        super.onCreate()
-        val player = ExoPlayer.Builder(this).build()
-        mediaSession = MediaSession.Builder(this, player)
-            .setCallback(object : MediaSession.Callback {
-                override fun onAddMediaItems(
-                    session: MediaSession,
-                    controller: MediaSession.ControllerInfo,
-                    mediaItems: List<MediaItem>
-                ): ListenableFuture<List<MediaItem>> {
-                    // 处理播放请求
-                    return Futures.immediateFuture(mediaItems)
+            // 动画结束后移除启动画面
+            fadeOut.addListener(new AnimatorListenerAdapter() {
+                @Override
+                public void onAnimationEnd(Animator animation) {
+                    splashScreenView.remove();
                 }
-            })
-            .build()
-    }
+            });
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo) = mediaSession
+            fadeOut.start();
+        });
+
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+    }
 }
 ```
 
-**注意事项：**
-- `PlayerView` 在 Compose 中用 `AndroidView { PlayerView(it) }` 嵌入
-- 后台播放必须在 Manifest 声明 `MediaSessionService` 和前台通知权限
-- Media3 完全替代了旧版 ExoPlayer 和 MediaCompat，新项目直接用 Media3
+**启动画面图标动画（Android 12+）：**
 
----
-
-### 20. Notifications
-
-**一句话定位：** 在 App 界面之外给用户发消息，状态栏、锁屏、通知栏都能看到。
-
-**核心原理：**
-
-通知通过 `NotificationManager` 系统服务发布。Android 8.0+ 要求所有通知必须分配到**通知渠道**（NotificationChannel），用户可以对每个渠道独立控制（开关、声音、是否弹出）。通知的重要性级别决定它有多"打扰"用户。
-
-**代码示例：**
-
-```kotlin
-// 1. 创建通知渠道（Android 8.0+，只需创建一次）
-if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-    val channel = NotificationChannel(
-        CHANNEL_ID,           // 渠道 ID
-        "消息通知",            // 用户看到的名称
-        NotificationManager.IMPORTANCE_DEFAULT  // 重要程度
-    ).apply {
-        description = "接收聊天消息"
-        enableVibration(true)
-    }
-    notificationManager.createNotificationChannel(channel)
-}
-
-// 2. 构建通知
-val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-    .setSmallIcon(R.drawable.ic_notification)       // 必须设置
-    .setContentTitle("新消息")
-    .setContentText("你收到了一条新消息")
-    .setLargeIcon(BitmapFactory.decodeResource(resources, R.drawable.avatar))
-    .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-    .setAutoCancel(true)                            // 点击后自动消失
-    .setContentIntent(pendingIntent)                // 点击跳转
-    .addAction(R.drawable.ic_reply, "回复", replyPendingIntent)  // 操作按钮
-    .build()
-
-// 3. 发送
-NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, notification)
+```xml
+<!-- res/drawable/ic_splash_animated.xml -->
+<!-- 使用 AnimatedVectorDrawable 做图标动画 -->
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/ic_splash_static">
+    <target
+        android:name="icon_group"
+        android:animation="@animator/splash_icon_rotation" />
+</animated-vector>
 ```
 
-**注意事项：**
-- `setSmallIcon` 是必须的，不设的话通知不显示
-- Android 13+ 需要运行时请求通知权限 `POST_NOTIFICATIONS`
-- 通知渠道一旦创建并提交给系统，后续修改只有部分属性生效（名称、描述可以改，重要性不能改）
-- 大图通知用 `setStyle(NotificationCompat.BigPictureStyle())`
-- 进度条通知用 `setProgress(max, current, indeterminate)`
+```xml
+<!-- res/animator/splash_icon_rotation.xml -->
+<objectAnimator
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:propertyName="rotation"
+    android:valueFrom="0"
+    android:valueTo="360"
+    android:duration="1000"
+    android:interpolator="@android:interpolator/accelerate_decelerate" />
+```
+
+#### 最佳实践
+
+- `installSplashScreen()` **必须**在 `super.onCreate()` 之前调用
+- 启动画面图标建议用 **Vector Drawable**，大小 240x240 dp
+- Android 12+ 的进入动画时长由系统控制，你只能自定义退出动画
+- 启动画面期间不要做耗时操作，应该尽快显示主界面
+- `windowSplashScreenAnimatedIcon` 在 Android 12+ 支持动画，低版本只显示静态图标
+
+#### 常见问题
+
+| 问题 | 原因 | 解决方案 |
+|------|------|---------|
+| 启动画面闪一下就没了 | 数据加载太快 | setKeepOnScreenCondition 控制时长 |
+| 退出动画没生效 | 没调 remove() | 动画结束后必须调 splashScreenView.remove() |
+| 低版本没显示 | 兼容库没配置 | 检查主题和依赖 |
 
 ---
 
 ## 速查总表
 
-| # | 库名 | 分类 | 一句话定位 | 核心原理 |
-|---|------|------|-----------|---------|
-| 1 | **ViewModel** | 架构 | 屏幕级状态容器，旋转不丢数据 | ViewModelStore 缓存实例，生命周期比 Activity 长 |
-| 2 | **LiveData** | 架构 | 感知生命周期的可观察数据 | 关联 LifecycleOwner，活跃时才通知，销毁时自动断开 |
-| 3 | **Room** | 架构 | SQLite 的 ORM 封装 | 编译时注解处理生成 SQL 代码，编译时验证查询 |
-| 4 | **DataStore** | 架构 | SP 的替代品，异步存储 | 协程 + Flow，原子性读写，文件持久化 |
-| 5 | **Navigation** | 架构 | 页面跳转统一管理 | 图结构管理目的地，NavController 中央调度 |
-| 6 | **Paging 3** | 架构 | 分页加载全家桶 | 三层架构（Source→Pager→Adapter），自动加载和缓存 |
-| 7 | **Hilt** | 架构 | 依赖注入框架 | 编译时生成 Dagger 组件，按层级自动注入 |
-| 8 | **Compose** | UI | 声明式 UI 框架 | @Composable 函数 + 智能重组 + Slot Table |
-| 9 | **Material 3** | UI | 设计规范实现 | ColorScheme + Typography + Shapes 三大子系统 |
-| 10 | **Compose Nav** | UI | Compose 页面导航 | Navigation 的 Compose 版，@Serializable 类型安全路由 |
-| 11 | **ViewBinding** | UI | XML 布局类型安全绑定 | 编译时生成绑定类，替代 findViewById |
-| 12 | **Fragment** | UI | 可插拔的 UI 模块 | 独立生命周期，FragmentManager 管理事务 |
-| 13 | **RecyclerView** | UI | 高效列表控件 | ViewHolder 复用 + DiffUtil 差异更新 |
-| 14 | **WorkManager** | 基础 | 可靠的后台任务调度 | SQLite 持久化 + JobScheduler/AlarmManager 自适应 |
-| 15 | **Startup** | 基础 | 启动初始化统一管理 | 共享 ContentProvider + Initializer 依赖排序 |
-| 16 | **SplashScreen** | 基础 | 统一启动画面 | 兼容 Android 12+ 系统行为，三阶段动画 |
-| 17 | **Biometric** | 行为 | 指纹/面部识别 | 封装 BiometricPrompt，支持 Keystore 加密绑定 |
-| 18 | **CameraX** | 行为 | 相机开发一站式方案 | Use Case 架构，自动处理设备兼容性 |
-| 19 | **Media3** | 行为 | 音视频播放统一库 | Player 接口 + MediaSession + MediaController |
-| 20 | **Notifications** | 行为 | 系统通知 | NotificationManager + Channel + NotificationCompat |
+| # | 库名 | 分类 | 一句话定位 | 核心原理 | Java 关键 API |
+|---|------|------|-----------|---------|--------------|
+| 1 | **ViewModel** | 架构 | 屏幕级状态容器，旋转不丢数据 | ViewModelStore 缓存实例，生命周期比 Activity 长 | `ViewModelProvider(owner).get(cls)` |
+| 2 | **LiveData** | 架构 | 感知生命周期的可观察数据 | 关联 LifecycleOwner，活跃时才通知，销毁时自动断开 | `MutableLiveData.setValue()` / `observe(owner, observer)` |
+| 3 | **Room** | 架构 | SQLite 的 ORM 封装 | 编译时注解处理生成 SQL 代码，编译时验证查询 | `@Entity` / `@Dao` / `@Query` / `Room.databaseBuilder()` |
+| 4 | **DataStore** | 架构 | SP 的替代品，异步存储 | RxJava + 原子性读写，文件持久化 | `RxPreferenceDataStoreBuilder` / `updateDataAsync()` |
+| 5 | **Navigation** | 架构 | 页面跳转统一管理 | 图结构管理目的地，NavController 中央调度 | `NavHostFragment` / `NavController.navigate()` / Safe Args |
+| 6 | **Paging 3** | 架构 | 分页加载全家桶 | 三层架构（Source→Pager→Adapter），自动加载和缓存 | `PagingSource` / `Pager.createFlowable()` / `PagingDataAdapter` |
+| 7 | **Hilt** | 架构 | 依赖注入框架 | 编译时生成 Dagger 组件，按层级自动注入 | `@HiltAndroidApp` / `@AndroidEntryPoint` / `@HiltViewModel` / `@Module` |
+| 8 | **ViewBinding** | UI | XML 布局类型安全绑定 | 编译时生成绑定类，替代 findViewById | `XxxBinding.inflate()` / `binding.getRoot()` |
+| 9 | **Fragment** | UI | 可插拔的 UI 模块 | 独立生命周期，FragmentManager 管理事务 | `newInstance()` / `getViewLifecycleOwner()` / Fragment Result API |
+| 10 | **RecyclerView** | UI | 高效列表控件 | ViewHolder 复用 + DiffUtil 差异更新 | `ListAdapter` / `DiffUtil.ItemCallback` / `submitList()` |
+| 11 | **WorkManager** | 基础 | 可靠的后台任务调度 | SQLite 持久化 + JobScheduler/AlarmManager 自适应 | `Worker` / `RxWorker` / `OneTimeWorkRequest` / `WorkManager.enqueue()` |
+| 12 | **Startup** | 基础 | 启动初始化统一管理 | 共享 ContentProvider + Initializer 依赖排序 | `Initializer<T>` / `create()` / `dependencies()` |
+| 13 | **SplashScreen** | 基础 | 统一启动画面 | 兼容 Android 12+ 系统行为，三阶段动画 | `installSplashScreen()` / `setKeepOnScreenCondition()` |
 
 ---
 
